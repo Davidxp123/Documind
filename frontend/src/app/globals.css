@@ -6,9 +6,43 @@
 
 body {
   font-family: 'Barlow', sans-serif;
-  background: #000;
+  background: transparent;
   color: #fff;
   overflow-x: hidden;
+}
+
+html {
+  background: #000;
+}
+
+html, body, #__next {
+  height: 100%;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+::selection {
+  background: #fff;
+  color: #000;
+}
+
+/* Header link styles */
+header a {
+  color: rgba(255,255,255,0.9);
+  text-decoration: none;
+}
+
+header .liquid-glass-strong {
+  background: rgba(255,255,255,0.03);
+}
+
+/* Utility to center hero vertically on small screens */
+.hero-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 h1, h2, h3 {

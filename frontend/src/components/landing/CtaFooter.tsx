@@ -1,53 +1,11 @@
 'use client';
 
-import { useEffect, useRef } from "react";
 import { ArrowUpRight } from "lucide-react";
-import Hls from "hls.js";
 
 const CtaFooter = () => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-
-    const src = "https://stream.mux.com/8wrHPCX2dC3msyYU9ObwqNdm00u3ViXvOSHUMRYSEe5Q.m3u8";
-
-    if (Hls.isSupported()) {
-      const hls = new Hls();
-      hls.loadSource(src);
-      hls.attachMedia(video);
-      return () => hls.destroy();
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      video.src = src;
-    }
-  }, []);
-
   return (
-    <section className="relative py-32 px-6 md:px-16 lg:px-24 text-center overflow-hidden bg-black">
-      {/* Background HLS Video */}
-      <video
-        ref={videoRef}
-        autoPlay
-        loop
-        muted
-        playsInline
-        className="absolute inset-0 w-full h-full object-cover z-0"
-      />
-
-      {/* Top fade */}
-      <div
-        className="absolute top-0 left-0 right-0 z-[1] pointer-events-none"
-        style={{ height: '200px', background: 'linear-gradient(to bottom, black, transparent)' }}
-      />
-      {/* Bottom fade */}
-      <div
-        className="absolute bottom-0 left-0 right-0 z-[1] pointer-events-none"
-        style={{ height: '200px', background: 'linear-gradient(to top, black, transparent)' }}
-      />
-
-      {/* Content */}
-      <div className="relative z-10">
+    <section className="relative py-32 px-6 md:px-16 lg:px-24 text-center z-10">
+      <div className="relative z-10 mx-auto max-w-4xl">
         <h2 className="text-5xl md:text-6xl lg:text-7xl font-heading italic text-white tracking-tight leading-[0.85] max-w-3xl mx-auto mb-4">
           Your next website starts here.
         </h2>
@@ -65,14 +23,11 @@ const CtaFooter = () => {
           </button>
         </div>
 
-        {/* Footer */}
-        <div className="mt-32 pt-8 border-t border-white/10 flex flex-col md:flex-row items-center justify-between gap-4">
-          <p className="text-white/40 font-body font-light text-xs">
-            &copy; 2026 Studio. All rights reserved.
-          </p>
+        <div className="mt-16 pt-8 border-t border-white/10 flex flex-col md:flex-row items-center justify-between gap-4 text-white/40 text-xs">
+          <p className="font-body font-light">&copy; 2026 Studio. All rights reserved.</p>
           <div className="flex items-center gap-6">
             {["Privacy", "Terms", "Contact"].map((link) => (
-              <a key={link} href="#" className="text-white/40 hover:text-white/70 font-body font-light text-xs transition-colors">
+              <a key={link} href="#" className="hover:text-white/80 transition-colors">
                 {link}
               </a>
             ))}

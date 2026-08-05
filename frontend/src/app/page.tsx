@@ -4,19 +4,20 @@ import Link from "next/link";
 
 export default function Home() {
   return (
-    <main className="min-h-screen bg-black text-white selection:bg-white selection:text-black">
+    <main className="min-h-screen text-white selection:bg-white selection:text-black">
       {/* Hero Section */}
-      <section className="relative px-6 pt-32 pb-20 max-w-6xl mx-auto text-center">
+      <section className="relative pt-24 pb-20 flex items-center justify-center min-h-[70vh]">
+        <div className="max-w-3xl mx-auto px-6 text-center">
         <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-white/5 mb-8 backdrop-blur-md">
           <Sparkles className="w-4 h-4 text-purple-400" />
           <span className="text-xs uppercase tracking-widest text-white/80">Next-Gen Document Intelligence</span>
         </div>
         
-        <h1 className="text-6xl md:text-8xl font-heading italic tracking-tight mb-6 leading-none">
+        <h1 className="text-4xl md:text-6xl font-heading italic tracking-tight mb-6 leading-none">
           DocMind AI Workspace
         </h1>
         
-        <p className="text-white/60 font-body text-lg md:text-xl max-w-2xl mx-auto mb-10 font-light">
+        <p className="text-white/60 font-body text-lg md:text-xl mb-10 font-light">
           Transform documents into an interactive knowledge universe. Unify multi-modal RAG, instant citations, and deep synthesis.
         </p>
 
@@ -27,6 +28,7 @@ export default function Home() {
           >
             Launch Workspace
           </Link>
+        </div>
         </div>
       </section>
 
