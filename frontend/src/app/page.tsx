@@ -14,7 +14,7 @@ export default function Home() {
         </div>
         
         <h1 className="text-4xl md:text-6xl font-heading italic tracking-tight mb-6 leading-none">
-          DocMind AI Workspace
+          DocuMind AI Workspace
         </h1>
         
         <p className="text-white/60 font-body text-lg md:text-xl mb-10 font-light">

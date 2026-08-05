@@ -18,7 +18,7 @@ export default function RootLayout({
         <header className="fixed top-0 left-0 right-0 z-40 py-4 bg-transparent">
           <div className="max-w-6xl mx-auto px-6 flex items-center justify-between">
             <a href="/" className="text-xl font-heading italic text-white/90">
-              DocMind
+              DocuMind
             </a>
             <nav className="hidden md:flex items-center gap-6 text-sm text-white/80">
               <a href="#" className="hover:text-white">Product</a>
