@@ -101,15 +101,36 @@ async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends
     return result.scalars().all()
 
 @router.post("/query")
-async def workspace_query(payload: ChatQueryRequest):
-    results = vector_store.query(payload.workspace_id, payload.query, top_k=6)
-    documents = results.get("documents") or []
-    metadatas = results.get("metadatas") or []
+async def workspace_query(payload: ChatQueryRequest, db: AsyncSession = Depends(get_db)):
+    initial_results = vector_store.query(payload.workspace_id, payload.query, top_k=6)
+    initial_documents = initial_results.get("documents") or []
+    initial_metadatas = initial_results.get("metadatas") or []
+    initial_distances = initial_results.get("distances") or []
+
+    documents = list(initial_documents)
+    metadatas = list(initial_metadatas)
+    distances = list(initial_distances)
 
     if documents and isinstance(documents[0], list):
         documents = documents[0]
     if metadatas and isinstance(metadatas[0], list):
         metadatas = metadatas[0]
+
+    filtered_flag = False
+    if payload.doc_ids:
+        filtered_flag = True
+        filtered_docs = []
+        filtered_metas = []
+        filtered_dist = []
+        for d, m, dist in zip(documents, metadatas, distances if isinstance(distances, list) else []):
+            doc_id = (m or {}).get("doc_id")
+            if doc_id in payload.doc_ids:
+                filtered_docs.append(d)
+                filtered_metas.append(m)
+                filtered_dist.append(dist)
+        documents = filtered_docs
+        metadatas = filtered_metas
+        distances = filtered_dist
 
     snippets = []
     for idx, text in enumerate(documents[:6]):
@@ -118,8 +139,26 @@ async def workspace_query(payload: ChatQueryRequest):
         page = meta.get("page", "?")
         snippets.append(f"Page {page}: {text_value[:400].replace('\n', ' ')}")
 
-    answer = gemini_service.generate_query_answer(payload.query, snippets)
+    if filtered_flag and not snippets:
+        q = await db.execute(select(Document).where(Document.id.in_(payload.doc_ids)))
+        found_docs = q.scalars().all()
+        if any((d.status != "completed") for d in found_docs):
+            return {"answer": "Requested documents are still processing. Please wait a few seconds and try again.", "results": {"documents": [], "metadatas": []}}
 
+        fallback_snippets = []
+        for idx, text in enumerate(initial_documents[:6]):
+            text_value = text if isinstance(text, str) else str(text)
+            meta = initial_metadatas[idx] if idx < len(initial_metadatas) else {}
+            page = meta.get("page", "?")
+            fallback_snippets.append(f"Page {page}: {text_value[:400].replace('\n', ' ')}")
+
+        answer = gemini_service.generate_query_answer(payload.query, fallback_snippets)
+        return {
+            "answer": "No relevant content found in selected documents. Searching entire workspace:\n\n" + answer,
+            "results": {"documents": initial_documents, "metadatas": initial_metadatas}
+        }
+
+    answer = gemini_service.generate_query_answer(payload.query, snippets)
     return {"answer": answer, "results": {"documents": documents, "metadatas": metadatas}}
 
 @router.delete("/{doc_id}")

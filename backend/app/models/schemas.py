@@ -35,6 +35,7 @@ class DocumentResponse(BaseModel):
 class ChatQueryRequest(BaseModel):
     workspace_id: str
     query: str
+    doc_ids: Optional[List[str]] = None
 
 class ChatMessageResponse(BaseModel):
     id: str
