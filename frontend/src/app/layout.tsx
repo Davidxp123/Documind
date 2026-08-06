@@ -15,7 +15,7 @@ export default function RootLayout({
     <html lang="en">
       <body className="relative text-white min-h-screen overflow-x-hidden">
         <BackgroundVideo />
-        <header className="fixed top-0 left-0 right-0 z-40 py-4 bg-transparent">
+        <header className="relative z-40 py-4 bg-transparent">
           <div className="max-w-6xl mx-auto px-6 flex items-center justify-between">
             <a href="/" className="text-xl font-heading italic text-white/90">
               DocuMind
@@ -28,7 +28,7 @@ export default function RootLayout({
           </div>
         </header>
 
-        <main className="min-h-screen relative z-20 pt-28 pb-12">
+        <main className="min-h-screen relative z-20 pb-12">
           <div className="max-w-6xl mx-auto px-6">
             {children}
           </div>

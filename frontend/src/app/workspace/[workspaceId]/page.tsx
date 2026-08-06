@@ -23,14 +23,29 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "/api";
 
 export default function WorkspacePage({ params }: { params: Promise<{ workspaceId: string }> }) {
   const { workspaceId } = use(params);
-  const [messages, setMessages] = useState<{ role: string; text: string }[]>([
-    { role: "assistant", text: `Welcome to workspace: ${workspaceId}. Upload a document on the left to begin RAG query processing.` }
-  ]);
   const [input, setInput] = useState("");
   const [uploadSteps, setUploadSteps] = useState<string[]>([]);
   const [documents, setDocuments] = useState<DocumentStatus[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [sessions, setSessions] = useState<{ id: string; name: string; messages: { role: string; text: string }[] }[]>([
+    { id: "default", name: "Current Session", messages: [{ role: "assistant", text: `Welcome to workspace: ${workspaceId}. Upload a document on the left to begin RAG query processing.` }] }
+  ]);
+  const [currentSessionId, setCurrentSessionId] = useState("default");
+
+  const currentSession = sessions.find((session) => session.id === currentSessionId) ?? sessions[0];
+  const currentMessages = currentSession?.messages ?? [];
+
+  const updateSessionMessages = (newMessages: { role: string; text: string }[]) => {
+    setSessions((prev) => prev.map((session) => session.id === currentSessionId ? { ...session, messages: newMessages } : session));
+  };
+
+  const appendSessionMessage = (message: { role: string; text: string }) => {
+    setSessions((prev) => prev.map((session) => {
+      if (session.id !== currentSessionId) return session;
+      return { ...session, messages: [...session.messages, message] };
+    }));
+  };
 
   const fetchWorkspaceDocuments = async () => {
     try {
@@ -55,7 +70,8 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
     if (!input.trim()) return;
     const currentQuery = input;
     setInput("");
-    setMessages((prev) => [...prev, { role: "user", text: currentQuery }]);
+    const updatedMessages = [...currentMessages, { role: "user", text: currentQuery }];
+    updateSessionMessages(updatedMessages);
     setError(null);
 
     try {
@@ -71,14 +87,14 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
       }
 
       const result = await response.json();
-      setMessages((prev) => [
-        ...prev,
+      updateSessionMessages([
+        ...updatedMessages,
         { role: "assistant", text: result.answer || "No answer returned from the workspace." }
       ]);
     } catch (err: any) {
       setError(err?.message || "Failed to fetch answer.");
-      setMessages((prev) => [
-        ...prev,
+      updateSessionMessages([
+        ...updatedMessages,
         { role: "assistant", text: "Sorry, I could not generate an answer right now." }
       ]);
     }
@@ -101,10 +117,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
           clearInterval(interval);
           if (doc?.status === "completed") {
             setStage(["Upload complete", "Extraction finished", "Embedding complete", "Analysis finalized"]);
-            setMessages((prev) => [
-              ...prev,
-              { role: "assistant", text: `Document ${doc.filename} has finished processing.` }
-            ]);
+            appendSessionMessage({ role: "assistant", text: `Document ${doc.filename} has finished processing.` });
           } else if (doc?.status?.startsWith("failed")) {
             setStage(["Upload complete", "Processing failed"]);
             setError(`Processing failed: ${doc.status}`);
@@ -122,35 +135,33 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
 
   const onDrop = async (acceptedFiles: File[]) => {
     if (!acceptedFiles.length) return;
-    const file = acceptedFiles[0];
     setError(null);
     setUploading(true);
     setStage(["Preparing upload"]);
 
     try {
-      const formData = new FormData();
-      formData.append("workspace_id", workspaceId);
-      formData.append("file", file);
+      for (const file of acceptedFiles) {
+        const formData = new FormData();
+        formData.append("workspace_id", workspaceId);
+        formData.append("file", file);
 
-      setStage(["Uploading file..."]);
-      const response = await fetch(`${API_BASE}/documents/upload`, {
-        method: "POST",
-        body: formData,
-      });
+        setStage([`Uploading ${file.name}...`]);
+        const response = await fetch(`${API_BASE}/documents/upload`, {
+          method: "POST",
+          body: formData,
+        });
 
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(text || "Upload failed");
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text || "Upload failed");
+        }
+
+        const data = await response.json();
+        setStage(["Upload complete", "Queuing processing..."]);
+        appendSessionMessage({ role: "assistant", text: `Document ${file.name} uploaded. Processing has started in the background.` });
+        await fetchWorkspaceDocuments();
+        pollDocumentStatus(data.doc_id);
       }
-
-      const data = await response.json();
-      setStage(["Upload complete", "Queuing processing..."]);
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: `Document ${file.name} uploaded. Processing has started in the background.` }
-      ]);
-      await fetchWorkspaceDocuments();
-      pollDocumentStatus(data.doc_id);
     } catch (err: any) {
       setError(err?.message || "Failed to upload document.");
       setStage(["Error uploading document."]);
@@ -159,16 +170,45 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
     }
   };
 
-  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: false });
+  const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: true });
 
   return (
     <div className="flex h-screen bg-black text-white overflow-hidden">
       <aside className="w-80 border-r border-white/10 bg-white/[0.04] backdrop-blur-2xl p-5 flex flex-col justify-between">
         <div>
-          <div className="flex items-center gap-2 mb-6">
+          <div className="flex flex-col gap-4 mb-6">
+          <div className="flex items-center gap-2">
             <Folder className="w-5 h-5 text-white/70" />
             <h2 className="text-xl font-heading italic">Explorer</h2>
           </div>
+          <div className="rounded-3xl border border-white/15 bg-white/[0.03] p-4 text-sm text-white/70">
+            <p className="mb-2 uppercase tracking-[0.3em] text-white/40 text-[10px]">Sessions</p>
+            <div className="space-y-2">
+              {sessions.map((session) => (
+                <button
+                  key={session.id}
+                  onClick={() => setCurrentSessionId(session.id)}
+                  className={`w-full text-left rounded-2xl px-3 py-2 text-xs ${session.id === currentSessionId ? 'bg-white/10 text-white' : 'bg-transparent text-white/70 hover:bg-white/10'}`}
+                >
+                  {session.name}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                const nextId = `session-${Date.now()}`;
+                setSessions((prev) => [
+                  ...prev,
+                  { id: nextId, name: `Session ${prev.length + 1}`, messages: [{ role: 'assistant', text: `Started new session in workspace: ${workspaceId}.` }] }
+                ]);
+                setCurrentSessionId(nextId);
+              }}
+              className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 py-2 text-[11px] uppercase tracking-[0.3em] text-white/70 hover:bg-white/10"
+            >
+              New session
+            </button>
+          </div>
+        </div>
           <div
             {...getRootProps()}
             className={`relative rounded-3xl border border-white/15 bg-white/[0.06] backdrop-blur-xl p-6 text-center transition-all hover:border-white/30 ${
@@ -182,6 +222,34 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
               Drop a file here or click to choose a PDF, DOCX, CSV, PPTX, or image.
             </p>
           </div>
+
+          {documents.length > 0 ? (
+            <div className="mt-6 rounded-3xl border border-white/10 bg-white/[0.06] p-4">
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <p className="text-xs uppercase text-white/40 tracking-[0.3em]">Uploaded Files</p>
+                <span className="text-[10px] text-white/50">{documents.length} files</span>
+              </div>
+              <div className="space-y-3">
+                {documents.map((doc) => (
+                  <div key={doc.id} className="rounded-3xl border border-white/10 bg-black/20 p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium text-white">{doc.filename}</p>
+                        <p className="text-[11px] text-white/50">{doc.file_type.toUpperCase()} · {doc.page_count} pages</p>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteDocument(doc.id)}
+                        className="text-[11px] uppercase tracking-[0.2em] text-white/60 hover:text-white"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    <p className="mt-2 text-[11px] text-white/50">Status: {doc.status}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <div className="mt-6 p-4 rounded-3xl border border-white/10 bg-white/[0.06] backdrop-blur-xl">
             <h4 className="text-xs uppercase text-white/40 mb-3">Processing Status</h4>
@@ -209,7 +277,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         <div className="text-xs text-white/30 font-light">Workspace ID: {workspaceId}</div>
       </aside>
 
-      <main className="flex-1 flex flex-col border-r border-white/10">
+      <main className="flex-[3] flex flex-col border-r border-white/10">
         <header className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Sparkles className="w-4 h-4 text-purple-400" />
@@ -218,7 +286,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         </header>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-4">
-          {messages.map((m, i) => (
+          {currentMessages.map((m, i) => (
             <div
               key={i}
               className={`max-w-xl p-4 rounded-3xl text-sm ${
