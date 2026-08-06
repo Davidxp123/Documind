@@ -1,10 +1,12 @@
 import os
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, Form, BackgroundTasks, HTTPException
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.db_models import Document
+from app.models.db_models import Document, Workspace
+from app.models.schemas import ChatQueryRequest, DocumentResponse
 from app.services.document_processor import DocumentProcessor
 from app.services.vector_store import vector_store
 from app.services.gemini_service import gemini_service
@@ -54,6 +56,12 @@ async def upload_document(
     with open(file_path, "wb") as f:
         f.write(content)
         
+    workspace = await db.get(Workspace, workspace_id)
+    if not workspace:
+        workspace = Workspace(id=workspace_id, name="Demo Workspace")
+        db.add(workspace)
+        await db.commit()
+
     doc = Document(
         id=doc_id,
         workspace_id=workspace_id,
@@ -69,3 +77,25 @@ async def upload_document(
     background_tasks.add_task(process_document_background, doc_id, file_path, ext, workspace_id)
     
     return {"message": "Upload started", "doc_id": doc_id}
+
+@router.get("/workspace/{workspace_id}", response_model=list[DocumentResponse])
+async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
+    return result.scalars().all()
+
+@router.post("/query")
+async def workspace_query(payload: ChatQueryRequest):
+    results = vector_store.query(payload.workspace_id, payload.query, top_k=6)
+    documents = results.get("documents") or []
+    metadatas = results.get("metadatas") or []
+    if not documents:
+        answer = "No relevant content was found in this workspace. Please upload documents and try again."
+    else:
+        snippets = []
+        for idx, text in enumerate(documents[:5]):
+            meta = metadatas[idx] if idx < len(metadatas) else {}
+            page = meta.get("page", "?")
+            snippets.append(f"Page {page}: {text[:400].replace('\n', ' ')}")
+        answer = "Here are the most relevant extracted passages from your workspace:\n\n" + "\n\n".join(snippets)
+
+    return {"answer": answer, "results": {"documents": documents, "metadatas": metadatas}}

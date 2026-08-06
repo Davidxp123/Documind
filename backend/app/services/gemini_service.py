@@ -1,8 +1,12 @@
 import json
-import google.generativeai as genai
 from app.core.config import settings
 
-if settings.GEMINI_API_KEY:
+try:
+    import google.generativeai as genai
+except ModuleNotFoundError:
+    genai = None
+
+if settings.GEMINI_API_KEY and genai is not None:
     genai.configure(api_key=settings.GEMINI_API_KEY)
 
 class GeminiService:
@@ -16,6 +20,14 @@ class GeminiService:
                 "entities": ["DocMind AI", "System"]
             }
             
+        if genai is None:
+            return {
+                "summary": "Gemini library is not installed. Document processed without AI insights.",
+                "keywords": ["RAG", "DocMind", "AI", "Workspace"],
+                "timeline": [{"year": "2026", "event": "Document processed without Gemini"}],
+                "entities": ["DocMind AI", "System"]
+            }
+
         model = genai.GenerativeModel("gemini-2.5-flash")
         prompt = f"""
 Analyze the following document text and return ONLY a JSON object with this exact structure:
@@ -29,6 +41,7 @@ Analyze the following document text and return ONLY a JSON object with this exac
 Document Content:
 {full_text[:10000]}
 """
+
         response = model.generate_content(prompt)
         try:
             return json.loads(response.text.strip('```json').strip('```'))

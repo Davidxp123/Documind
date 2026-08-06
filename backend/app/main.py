@@ -1,3 +1,4 @@
+import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -16,6 +17,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
+    os.makedirs(settings.DOCS_DIR, exist_ok=True)
+    os.makedirs(settings.CHROMA_DIR, exist_ok=True)
+    os.makedirs(os.path.join(settings.STORAGE_DIR, "sqlite"), exist_ok=True)
     await init_db()
 
 app.include_router(api_router, prefix=settings.API_V1_STR)
