@@ -28,8 +28,8 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
   const [documents, setDocuments] = useState<DocumentStatus[]>([]);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<{ id: string; name: string; messages: { role: string; text: string }[] }[]>([
-    { id: "default", name: "Current Session", messages: [{ role: "assistant", text: `Welcome to workspace: ${workspaceId}. Upload a document on the left to begin RAG query processing.` }] }
+  const [sessions, setSessions] = useState<{ id: string; name: string; messages: { role: string; text: string }[]; docs: DocumentStatus[] }[]>([
+    { id: "default", name: "Current Session", messages: [{ role: "assistant", text: `Welcome to workspace: ${workspaceId}. Upload a document on the left to begin RAG query processing.` }], docs: [] }
   ]);
   const [currentSessionId, setCurrentSessionId] = useState("default");
 
@@ -44,6 +44,22 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
     setSessions((prev) => prev.map((session) => {
       if (session.id !== currentSessionId) return session;
       return { ...session, messages: [...session.messages, message] };
+    }));
+  };
+
+  const appendSessionDoc = (doc: DocumentStatus) => {
+    setSessions((prev) => prev.map((session) => {
+      if (session.id !== currentSessionId) return session;
+      // avoid duplicates
+      if ((session.docs || []).some((d) => d.id === doc.id)) return session;
+      return { ...session, docs: [...(session.docs || []), doc] };
+    }));
+  };
+
+  const removeSessionDoc = (docId: string) => {
+    setSessions((prev) => prev.map((session) => {
+      if (session.id !== currentSessionId) return session;
+      return { ...session, docs: (session.docs || []).filter((d) => d.id !== docId) };
     }));
   };
 
@@ -111,6 +127,8 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         }
         const docs: DocumentStatus[] = await response.json();
         setDocuments(docs);
+        // populate default session docs (persist existing workspace docs to default session)
+        setSessions((prev) => prev.map((s, i) => i === 0 ? { ...s, docs } : s));
         const doc = docs.find((item) => item.id === docId);
 
         if (doc?.status === "completed" || doc?.status?.startsWith("failed") || count >= 15) {
@@ -131,6 +149,24 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         setError("Unable to poll document status.");
       }
     }, 2000);
+  };
+
+  const handleDeleteDocument = async (docId: string) => {
+    try {
+      const resp = await fetch(`${API_BASE}/documents/${docId}`, { method: 'DELETE' });
+      if (!resp.ok) throw new Error(await resp.text());
+      // remove from workspace list and session
+      setDocuments((prev) => prev.filter((d) => d.id !== docId));
+      removeSessionDoc(docId);
+      appendSessionMessage({ role: 'assistant', text: 'Document removed from this session.' });
+    } catch (e: any) {
+      console.error(e);
+      setError(e?.message || 'Failed to delete document');
+    }
+  };
+
+  const handleRenameSession = (newName: string) => {
+    setSessions((prev) => prev.map((s) => s.id === currentSessionId ? { ...s, name: newName } : s));
   };
 
   const onDrop = async (acceptedFiles: File[]) => {
@@ -159,8 +195,14 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         const data = await response.json();
         setStage(["Upload complete", "Queuing processing..."]);
         appendSessionMessage({ role: "assistant", text: `Document ${file.name} uploaded. Processing has started in the background.` });
-        await fetchWorkspaceDocuments();
-        pollDocumentStatus(data.doc_id);
+        // attach returned doc to current session immediately
+        if (data?.doc) {
+          appendSessionDoc(data.doc as DocumentStatus);
+          setDocuments((prev) => [data.doc, ...prev]);
+        } else {
+          await fetchWorkspaceDocuments();
+        }
+        pollDocumentStatus(data.doc?.id ?? data.doc_id ?? null);
       }
     } catch (err: any) {
       setError(err?.message || "Failed to upload document.");
@@ -196,13 +238,13 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
             </div>
             <button
               onClick={() => {
-                const nextId = `session-${Date.now()}`;
-                setSessions((prev) => [
-                  ...prev,
-                  { id: nextId, name: `Session ${prev.length + 1}`, messages: [{ role: 'assistant', text: `Started new session in workspace: ${workspaceId}.` }] }
-                ]);
-                setCurrentSessionId(nextId);
-              }}
+                  const nextId = `session-${Date.now()}`;
+                  setSessions((prev) => [
+                    ...prev,
+                    { id: nextId, name: `Session ${prev.length + 1}`, messages: [{ role: 'assistant', text: `Started new session in workspace: ${workspaceId}.` }], docs: [] }
+                  ]);
+                  setCurrentSessionId(nextId);
+                }}
               className="mt-4 w-full rounded-2xl border border-white/10 bg-white/5 py-2 text-[11px] uppercase tracking-[0.3em] text-white/70 hover:bg-white/10"
             >
               New session

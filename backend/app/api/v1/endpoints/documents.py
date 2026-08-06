@@ -73,10 +73,27 @@ async def upload_document(
     )
     db.add(doc)
     await db.commit()
-    
+    await db.refresh(doc)
+
     background_tasks.add_task(process_document_background, doc_id, file_path, ext, workspace_id, file.filename)
-    
-    return {"message": "Upload started", "doc_id": doc_id}
+
+    return {
+        "message": "Upload started",
+        "doc": {
+            "id": doc.id,
+            "workspace_id": doc.workspace_id,
+            "filename": doc.filename,
+            "file_type": doc.file_type,
+            "file_size": doc.file_size,
+            "status": doc.status,
+            "page_count": doc.page_count,
+            "summary": doc.summary,
+            "keywords": doc.keywords,
+            "timeline": doc.timeline,
+            "entities": doc.entities,
+            "created_at": doc.created_at.isoformat() if doc.created_at else None,
+        }
+    }
 
 @router.get("/workspace/{workspace_id}", response_model=list[DocumentResponse])
 async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends(get_db)):
