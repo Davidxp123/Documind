@@ -108,11 +108,6 @@ async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends
     result = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
     return result.scalars().all()
 
-@router.get("/session/{session_id}", response_model=list[DocumentResponse])
-async def list_session_documents(session_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.session_id == session_id))
-    return result.scalars().all()
-
 @router.patch("/{doc_id}/session", response_model=DocumentResponse)
 async def assign_document_session(doc_id: str, payload: SessionAssignRequest, db: AsyncSession = Depends(get_db)):
     doc = await db.get(Document, doc_id)
@@ -131,61 +126,46 @@ async def assign_document_session(doc_id: str, payload: SessionAssignRequest, db
 
 @router.post("/query")
 async def workspace_query(payload: ChatQueryRequest, db: AsyncSession = Depends(get_db)):
-    initial_results = vector_store.query(payload.workspace_id, payload.query, top_k=6)
+    initial_results = vector_store.query(
+        workspace_id=payload.workspace_id,
+        query_text=payload.query,
+        top_k=6,
+        doc_ids=payload.doc_ids if payload.doc_ids else None
+    )
     initial_documents = initial_results.get("documents") or []
     initial_metadatas = initial_results.get("metadatas") or []
-    initial_distances = initial_results.get("distances") or []
 
     documents = list(initial_documents)
     metadatas = list(initial_metadatas)
-    distances = list(initial_distances)
 
     if documents and isinstance(documents[0], list):
         documents = documents[0]
     if metadatas and isinstance(metadatas[0], list):
         metadatas = metadatas[0]
 
-    filtered_flag = False
-    if payload.doc_ids:
-        filtered_flag = True
-        filtered_docs = []
-        filtered_metas = []
-        filtered_dist = []
-        for d, m, dist in zip(documents, metadatas, distances if isinstance(distances, list) else []):
-            doc_id = (m or {}).get("doc_id")
-            if doc_id in payload.doc_ids:
-                filtered_docs.append(d)
-                filtered_metas.append(m)
-                filtered_dist.append(dist)
-        documents = filtered_docs
-        metadatas = filtered_metas
-        distances = filtered_dist
-
     snippets = []
     for idx, text in enumerate(documents[:6]):
         text_value = text if isinstance(text, str) else str(text)
         meta = metadatas[idx] if idx < len(metadatas) else {}
         page = meta.get("page", "?")
-        snippets.append(f"Page {page}: {text_value[:400].replace('\n', ' ')}")
+        doc_filename = meta.get("filename", "Document")
+        snippets.append(f"[{doc_filename} - Page {page}]: {text_value[:500].replace('\n', ' ')}")
 
-    if filtered_flag and not snippets:
+    if not snippets and payload.doc_ids:
         q = await db.execute(select(Document).where(Document.id.in_(payload.doc_ids)))
         found_docs = q.scalars().all()
         if any((d.status != "completed") for d in found_docs):
             return {"answer": "Requested documents are still processing. Please wait a few seconds and try again.", "results": {"documents": [], "metadatas": []}}
-
-        fallback_snippets = []
-        for idx, text in enumerate(initial_documents[:6]):
-            text_value = text if isinstance(text, str) else str(text)
-            meta = initial_metadatas[idx] if idx < len(initial_metadatas) else {}
-            page = meta.get("page", "?")
-            fallback_snippets.append(f"Page {page}: {text_value[:400].replace('\n', ' ')}")
-
-        answer = gemini_service.generate_query_answer(payload.query, fallback_snippets)
-        return {
-            "answer": "No relevant content found in selected documents. Searching entire workspace:\n\n" + answer,
-            "results": {"documents": initial_documents, "metadatas": initial_metadatas}
-        }
+        
+        # Fallback: extract text directly from document files if vector DB returned empty
+        for doc in found_docs:
+            if doc.file_path and os.path.exists(doc.file_path):
+                try:
+                    pages, _ = DocumentProcessor.extract_text_and_chunks(doc.file_path, doc.file_type)
+                    for p in pages[:3]:
+                        snippets.append(f"[{doc.filename} - Page {p['page']}]: {p['text'][:500].replace('\n', ' ')}")
+                except Exception:
+                    pass
 
     answer = gemini_service.generate_query_answer(payload.query, snippets)
     return {"answer": answer, "results": {"documents": documents, "metadatas": metadatas}}

@@ -1,8 +1,9 @@
 'use client';
 
-import { use, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Folder, Sparkles, BarChart2, UploadCloud, AlertTriangle } from 'lucide-react';
+import { useParams } from 'next/navigation';
+import { Folder, Sparkles, BarChart2, UploadCloud, AlertTriangle, User, Bot } from 'lucide-react';
 
 type DocumentStatus = {
   id: string;
@@ -29,8 +30,9 @@ type SessionState = {
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
-export default function WorkspacePage({ params }: { params: Promise<{ workspaceId: string }> }) {
-  const { workspaceId } = use(params);
+export default function WorkspacePage() {
+  const params = useParams();
+  const workspaceId = String(params?.workspaceId ?? '');
   const [input, setInput] = useState('');
   const [uploadSteps, setUploadSteps] = useState<string[]>([]);
   const [documents, setDocuments] = useState<DocumentStatus[]>([]);
@@ -39,7 +41,12 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
   const [sessions, setSessions] = useState<SessionState[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState('');
 
-  const currentSession = sessions.find((session) => session.id === currentSessionId) ?? { id: '', name: '', messages: [], docs: [] };
+  const currentSession: SessionState = sessions.find((session) => session.id === currentSessionId) ?? {
+    id: '',
+    name: '',
+    messages: [],
+    docs: [],
+  };
   const currentMessages = currentSession.messages;
 
   const updateSessionMessages = (newMessages: { role: 'user' | 'assistant'; text: string }[]) => {
@@ -73,6 +80,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
   };
 
   const fetchWorkspaceDocuments = async () => {
+    if (!workspaceId) return;
     try {
       const response = await fetch(`${API_BASE}/documents/workspace/${workspaceId}`);
       if (!response.ok) throw new Error(await response.text());
@@ -125,8 +133,12 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
   };
 
   useEffect(() => {
-    fetchWorkspaceSessions();
-    fetchWorkspaceDocuments();
+    const initWorkspace = async () => {
+      await fetchWorkspaceSessions();
+      await fetchWorkspaceDocuments();
+    };
+
+    initWorkspace();
   }, [workspaceId]);
 
   const setStage = (stages: string[]) => setUploadSteps(stages);
@@ -252,11 +264,12 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
   const deleteSession = async (sessionId: string) => {
     if (!confirm('Are you sure you want to delete this session and its associated session documents?')) return;
     try {
-      const response = await fetch(`${API_BASE}/workspaces/sessions/${sessionId}`, { method: 'DELETE' });
+      const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions/${sessionId}`, { method: 'DELETE' });
       if (!response.ok) throw new Error(await response.text());
-      setSessions((prev) => prev.filter((session) => session.id !== sessionId));
+      const remaining = sessions.filter((session) => session.id !== sessionId);
+      setSessions(remaining);
       if (currentSessionId === sessionId) {
-        setCurrentSessionId(sessions.find((session) => session.id !== sessionId)?.id ?? 'default');
+        setCurrentSessionId(remaining[0]?.id ?? '');
       }
     } catch (err) {
       console.error(err);
@@ -271,22 +284,64 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         const sentences = doc.summary.split(/(?<=[.!?])\s+/).filter(Boolean);
         for (const sentence of sentences) {
           if (insights.length >= 5) break;
-          insights.push(sentence.trim());
+          const cleaned = sentence.trim();
+          if (cleaned && !insights.includes(cleaned)) {
+            insights.push(cleaned);
+          }
         }
       }
       if (insights.length >= 5) break;
+    }
+
+    if (insights.length === 0) {
+      for (const msg of currentMessages) {
+        if (msg.role === 'assistant' && msg.text && !msg.text.includes('ready') && !msg.text.includes('Started a new session')) {
+          const sentences = msg.text.split(/(?<=[.!?])\s+/).filter((s) => s.length > 20);
+          for (const s of sentences) {
+            if (insights.length >= 4) break;
+            const cleaned = s.trim();
+            if (cleaned && !insights.includes(cleaned)) {
+              insights.push(cleaned);
+            }
+          }
+        }
+        if (insights.length >= 4) break;
+      }
     }
     return insights;
   };
 
   const getTopKeywords = () => {
     const counts: Record<string, number> = {};
+    const stopwords = new Set([
+      'the', 'and', 'for', 'that', 'this', 'with', 'you', 'are', 'not', 'have', 'from', 'was', 'what', 'your',
+      'can', 'about', 'document', 'session', 'workspace', 'upload', 'begin', 'ready', 'files', 'file',
+      'text', 'content', 'system', 'please', 'there', 'were', 'which', 'would', 'could', 'should', 'here', 'ready.'
+    ]);
+
     for (const doc of currentSession.docs) {
       for (const keyword of doc.keywords ?? []) {
-        counts[keyword.toLowerCase()] = (counts[keyword.toLowerCase()] || 0) + 1;
+        const k = keyword.toLowerCase().trim();
+        if (k && !stopwords.has(k)) {
+          counts[k] = (counts[k] || 0) + 3;
+        }
       }
     }
-    return Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([keyword]) => keyword);
+
+    for (const msg of currentMessages) {
+      const words = msg.text.match(/\b[a-zA-Z]{4,}\b/g) || [];
+      for (const word of words) {
+        const w = word.toLowerCase();
+        if (!stopwords.has(w)) {
+          counts[w] = (counts[w] || 0) + 1;
+        }
+      }
+    }
+
+    return Object.entries(counts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([keyword]) => keyword.charAt(0).toUpperCase() + keyword.slice(1));
   };
 
   const assignDocumentToSession = async (doc: DocumentStatus, sessionId: string | null) => {
@@ -301,7 +356,7 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
       setDocuments((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
       if (sessionId === currentSessionId) {
         appendSessionDoc(updated);
-      } else if (doc.session_id === currentSessionId && sessionId === null) {
+      } else if (doc.session_id === currentSessionId) {
         removeSessionDoc(doc.id);
       }
     } catch (err) {
@@ -320,7 +375,9 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
       for (const file of acceptedFiles) {
         const formData = new FormData();
         formData.append('workspace_id', workspaceId);
-        formData.append('session_id', currentSessionId);
+        if (currentSessionId) {
+          formData.append('session_id', currentSessionId);
+        }
         formData.append('file', file);
 
         setStage([`Uploading ${file.name}...`]);
@@ -405,18 +462,18 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
             </div>
             <div className="space-y-3">
               {currentSession.docs.map((doc) => (
-                <div key={doc.id} className="rounded-3xl border border-white/10 bg-black/20 p-3">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-medium text-white">{doc.filename}</p>
-                      <p className="text-[11px] text-white/50">{doc.file_type.toUpperCase()} · {doc.page_count} pages</p>
+                <div key={doc.id} className="rounded-2xl border border-white/10 bg-black/30 p-3 overflow-hidden">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-medium text-white truncate" title={doc.filename}>{doc.filename}</p>
+                      <p className="text-[10px] text-white/50 mt-0.5">{doc.file_type.toUpperCase()} · {doc.page_count} pages</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      <button onClick={() => assignDocumentToSession(doc, null)} className="text-[11px] uppercase tracking-[0.2em] text-white/60 hover:text-white">Remove</button>
-                      <button onClick={() => handleDeleteDocument(doc.id)} className="text-[11px] uppercase tracking-[0.2em] text-white/60 hover:text-white">Delete</button>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button onClick={() => assignDocumentToSession(doc, null)} className="text-[10px] uppercase tracking-wider text-white/70 hover:text-white px-2 py-1 rounded-lg bg-white/5 hover:bg-white/10 transition-all">Remove</button>
+                      <button onClick={() => handleDeleteDocument(doc.id)} className="text-[10px] uppercase tracking-wider text-red-400/90 hover:text-red-300 px-2 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 transition-all">Delete</button>
                     </div>
                   </div>
-                  <p className="mt-2 text-[11px] text-white/50">Status: {doc.status}</p>
+                  <p className="mt-2 text-[10px] text-white/40">Status: {doc.status}</p>
                 </div>
               ))}
             </div>
@@ -458,10 +515,33 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
         </header>
 
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
-          <div className="space-y-4">
+          <div className="space-y-6">
             {currentMessages.map((message, index) => (
-              <div key={index} className={`p-4 rounded-3xl text-sm ${message.role === 'user' ? 'ml-auto bg-white/10 text-white w-fit max-w-[70%]' : 'bg-white/[0.04] border border-white/10 text-white/90 w-full'}`}>
-                {message.text}
+              <div
+                key={index}
+                className={`flex items-start gap-3 ${
+                  message.role === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+              >
+                {message.role === 'assistant' && (
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-purple-600/70 to-purple-400/90 border border-purple-300/30 flex items-center justify-center shadow-lg shadow-purple-500/20 mt-1">
+                    <Sparkles className="w-4 h-4 text-white" />
+                  </div>
+                )}
+                <div
+                  className={`p-4 rounded-3xl text-sm leading-relaxed whitespace-pre-wrap ${
+                    message.role === 'user'
+                      ? 'bg-white/10 border border-white/15 text-white max-w-[75%]'
+                      : 'bg-white/[0.04] border border-white/10 text-white/90 max-w-[85%]'
+                  }`}
+                >
+                  {message.text}
+                </div>
+                {message.role === 'user' && (
+                  <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center shadow-md mt-1">
+                    <User className="w-4 h-4 text-white/80" />
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -482,26 +562,13 @@ export default function WorkspacePage({ params }: { params: Promise<{ workspaceI
               Ask
             </button>
           </div>
-
-          <div className="rounded-3xl border border-white/10 bg-white/[0.05] p-6">
-            <h3 className="text-base font-heading italic mb-4">Session insights</h3>
-            {getTopInsights().length ? (
-              <ul className="space-y-3 text-sm text-white/70">
-                {getTopInsights().map((insight, index) => (
-                  <li key={index} className="rounded-3xl border border-white/10 bg-black/20 p-4">{insight}</li>
-                ))}
-              </ul>
-            ) : (
-              <p className="text-white/60">No insights available yet. Ask the assistant or upload documents to generate summaries.</p>
-            )}
-          </div>
         </div>
       </main>
 
       <aside className="w-96 bg-white/[0.04] backdrop-blur-2xl p-6 space-y-6 overflow-y-auto">
         <div className="flex items-center gap-2">
           <BarChart2 className="w-5 h-5 text-white/70" />
-          <h2 className="text-xl font-heading italic">Document intelligence</h2>
+          <h2 className="text-xl font-heading italic">Session Insights</h2>
         </div>
 
         <div className="rounded-3xl border border-white/10 bg-white/[0.06] p-5">

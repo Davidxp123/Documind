@@ -1,5 +1,27 @@
 import os
-from pydantic_settings import BaseSettings
+
+try:
+    from dotenv import load_dotenv
+    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env_backend = os.path.join(backend_dir, ".env")
+    env_root = os.path.join(os.path.dirname(backend_dir), ".env")
+    if os.path.exists(env_backend):
+        load_dotenv(dotenv_path=env_backend)
+    elif os.path.exists(env_root):
+        load_dotenv(dotenv_path=env_root)
+except Exception:
+    pass
+
+try:
+    from pydantic_settings import BaseSettings
+except ImportError:
+    try:
+        from pydantic import BaseSettings
+    except ImportError:
+        class BaseSettings:
+            def __init__(self, **kwargs):
+                for k, v in kwargs.items():
+                    setattr(self, k, v)
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "DocMind AI Workspace"

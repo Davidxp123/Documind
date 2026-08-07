@@ -31,34 +31,34 @@ class VectorStore:
         )
 
     def delete_document_chunks(self, doc_id: str):
-        results = self.collection.query(
-            where={"doc_id": doc_id},
-            n_results=1000,
-            include=["ids"],
-        )
-
-        if hasattr(results, "to_dict"):
-            results = results.to_dict()
-
-        ids = []
-        if isinstance(results, dict):
-            ids = results.get("ids") or []
         try:
-            ids = [item for item in ids if isinstance(item, str)]
+            self.collection.delete(where={"doc_id": doc_id})
         except Exception:
-            ids = []
+            pass
 
-        if ids:
-            self.collection.delete(ids=ids)
-
-    def query(self, workspace_id: str, query_text: str, top_k: int = 6):
+    def query(self, workspace_id: str, query_text: str, top_k: int = 6, doc_ids: list = None):
         query_embedding = self.model.encode([query_text]).tolist()
-        results = self.collection.query(
-            query_embeddings=query_embedding,
-            n_results=top_k,
-            where={"workspace_id": workspace_id},
-            include=["documents", "metadatas", "distances"],
-        )
+        
+        where_clause = {"workspace_id": workspace_id}
+        if doc_ids and len(doc_ids) == 1:
+            where_clause = {"$and": [{"workspace_id": workspace_id}, {"doc_id": doc_ids[0]}]}
+        elif doc_ids and len(doc_ids) > 1:
+            where_clause = {"$and": [{"workspace_id": workspace_id}, {"doc_id": {"$in": doc_ids}}]}
+
+        try:
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=top_k,
+                where=where_clause,
+                include=["documents", "metadatas", "distances"],
+            )
+        except Exception:
+            results = self.collection.query(
+                query_embeddings=query_embedding,
+                n_results=top_k,
+                where={"workspace_id": workspace_id},
+                include=["documents", "metadatas", "distances"],
+            )
 
         if hasattr(results, "to_dict"):
             results = results.to_dict()

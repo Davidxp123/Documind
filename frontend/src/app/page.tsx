@@ -21,7 +21,7 @@ export default function Home() {
   return (
     <main className="min-h-screen text-white selection:bg-white selection:text-black">
       <section className="relative pt-24 pb-24 flex items-center justify-center">
-        <div className="max-w-5xl mx-auto px-6 text-center">
+        <div className="max-w-6xl mx-auto px-6 text-center">
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-white/10 bg-white/5 mb-8 backdrop-blur-md">
             <Sparkles className="w-4 h-4 text-purple-400" />
             <span className="text-xs uppercase tracking-widest text-white/80">Enterprise RAG for Document Teams</span>
@@ -31,7 +31,7 @@ export default function Home() {
             DocuMind delivers professional document intelligence with a modern AI workspace.
           </h1>
 
-          <p className="mx-auto max-w-3xl text-white/60 font-body text-lg md:text-xl mb-10 font-light">
+          <p className="mx-auto max-w-4xl text-white/60 font-body text-lg md:text-xl mb-10 font-light">
             Build a fully managed retrieval-augmented generation workflow with session-level document control, conversational search, and automatic insights.
           </p>
 

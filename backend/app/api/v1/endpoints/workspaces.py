@@ -44,8 +44,8 @@ async def list_workspace_sessions(workspace_id: str, db: AsyncSession = Depends(
     result = await db.execute(select(Session).where(Session.workspace_id == workspace_id))
     return result.scalars().all()
 
-@router.patch("/sessions/{session_id}", response_model=SessionResponse)
-async def update_workspace_session(session_id: str, payload: SessionCreate, db: AsyncSession = Depends(get_db)):
+@router.patch("/{workspace_id}/sessions/{session_id}", response_model=SessionResponse)
+async def update_workspace_session(workspace_id: str, session_id: str, payload: SessionCreate, db: AsyncSession = Depends(get_db)):
     session = await db.get(Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -54,8 +54,8 @@ async def update_workspace_session(session_id: str, payload: SessionCreate, db: 
     await db.refresh(session)
     return session
 
-@router.delete("/sessions/{session_id}")
-async def delete_workspace_session(session_id: str, db: AsyncSession = Depends(get_db)):
+@router.delete("/{workspace_id}/sessions/{session_id}")
+async def delete_workspace_session(workspace_id: str, session_id: str, db: AsyncSession = Depends(get_db)):
     session = await db.get(Session, session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -72,6 +72,7 @@ async def delete_workspace_session(session_id: str, db: AsyncSession = Depends(g
                 os.remove(doc.file_path)
         except Exception:
             pass
+        await db.delete(doc)
 
     await db.delete(session)
     await db.commit()
