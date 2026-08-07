@@ -5,8 +5,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.db_models import Document, Workspace
-from app.models.schemas import ChatQueryRequest, DocumentResponse
+from app.models.db_models import Document, Workspace, Session
+from app.models.schemas import ChatQueryRequest, DocumentResponse, SessionAssignRequest
 from app.services.document_processor import DocumentProcessor
 from app.services.vector_store import vector_store
 from app.services.gemini_service import gemini_service
@@ -45,6 +45,7 @@ async def process_document_background(doc_id: str, file_path: str, file_type: st
 async def upload_document(
     background_tasks: BackgroundTasks,
     workspace_id: str = Form(...),
+    session_id: str | None = Form(None),
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db)
 ):
@@ -62,9 +63,15 @@ async def upload_document(
         db.add(workspace)
         await db.commit()
 
+    if session_id:
+        session_obj = await db.get(Session, session_id)
+        if not session_obj:
+            raise HTTPException(status_code=404, detail="Session not found")
+
     doc = Document(
         id=doc_id,
         workspace_id=workspace_id,
+        session_id=session_id,
         filename=file.filename,
         file_type=ext,
         file_path=file_path,
@@ -82,6 +89,7 @@ async def upload_document(
         "doc": {
             "id": doc.id,
             "workspace_id": doc.workspace_id,
+            "session_id": doc.session_id,
             "filename": doc.filename,
             "file_type": doc.file_type,
             "file_size": doc.file_size,
@@ -99,6 +107,27 @@ async def upload_document(
 async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
     return result.scalars().all()
+
+@router.get("/session/{session_id}", response_model=list[DocumentResponse])
+async def list_session_documents(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Document).where(Document.session_id == session_id))
+    return result.scalars().all()
+
+@router.patch("/{doc_id}/session", response_model=DocumentResponse)
+async def assign_document_session(doc_id: str, payload: SessionAssignRequest, db: AsyncSession = Depends(get_db)):
+    doc = await db.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if payload.session_id:
+        session_obj = await db.get(Session, payload.session_id)
+        if not session_obj:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+    doc.session_id = payload.session_id
+    await db.commit()
+    await db.refresh(doc)
+    return doc
 
 @router.post("/query")
 async def workspace_query(payload: ChatQueryRequest, db: AsyncSession = Depends(get_db)):
@@ -182,3 +211,8 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"message": "Document deleted"}
+
+@router.get("/session/{session_id}/documents", response_model=list[DocumentResponse])
+async def list_session_documents(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Document).where(Document.session_id == session_id))
+    return result.scalars().all()

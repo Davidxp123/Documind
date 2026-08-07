@@ -18,6 +18,7 @@ class WorkspaceResponse(BaseModel):
 class DocumentResponse(BaseModel):
     id: str
     workspace_id: str
+    session_id: Optional[str] = None
     filename: str
     file_type: str
     file_size: int
@@ -32,9 +33,25 @@ class DocumentResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class SessionCreate(BaseModel):
+    name: str
+
+class SessionResponse(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+class SessionAssignRequest(BaseModel):
+    session_id: Optional[str] = None
+
 class ChatQueryRequest(BaseModel):
     workspace_id: str
     query: str
+    session_id: Optional[str] = None
     doc_ids: Optional[List[str]] = None
 
 class ChatMessageResponse(BaseModel):

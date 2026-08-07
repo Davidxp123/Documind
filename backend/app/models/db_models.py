@@ -12,13 +12,26 @@ class Workspace(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     documents = relationship("Document", back_populates="workspace", cascade="all, delete-orphan")
+    sessions = relationship("Session", back_populates="workspace", cascade="all, delete-orphan")
     messages = relationship("ChatMessage", back_populates="workspace", cascade="all, delete-orphan")
+
+class Session(Base):
+    __tablename__ = "sessions"
+
+    id = Column(String, primary_key=True, index=True)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    workspace = relationship("Workspace", back_populates="sessions")
+    documents = relationship("Document", back_populates="session", cascade="all, delete-orphan")
 
 class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String, primary_key=True, index=True)
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    session_id = Column(String, ForeignKey("sessions.id"), nullable=True)
     filename = Column(String, nullable=False)
     file_type = Column(String, nullable=False)
     file_path = Column(String, nullable=False)
@@ -32,6 +45,7 @@ class Document(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="documents")
+    session = relationship("Session", back_populates="documents")
 
 class ChatMessage(Base):
     __tablename__ = "chat_messages"
