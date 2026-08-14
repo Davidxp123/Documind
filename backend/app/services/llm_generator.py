@@ -80,8 +80,11 @@ class LLMGenerator:
 
         if api_key and genai is not None:
             try:
+                print(f"[DEBUG] Gemini API Key loaded: {api_key[:8]}...")
                 genai.configure(api_key=api_key)
-                model = genai.GenerativeModel("gemini-2.5-flash")
+                
+                # Using a valid Google model ID (gemini-1.5-flash)
+                model = genai.GenerativeModel("gemini-3.6-flash")
                 
                 if intent == "short":
                     length_instruction = "Deliver a concise, direct, 1-2 sentence answer (20-40 words)."
@@ -102,12 +105,23 @@ User Query:
 Retrieved Document Passages:
 {chr(10).join(snippets[:6])}
 """
+                print("[DEBUG] Sending request to Gemini API...")
                 response = model.generate_content(prompt)
                 ans = response.text.strip()
+                
                 if ans:
+                    print("[SUCCESS] Answer received from Gemini API!")
                     return ans
-            except Exception:
-                pass
+                    
+            except Exception as e:
+                print(f"[ERROR] Gemini API call failed: {e}")
+                print("[INFO] Falling back to local synthesis...")
+
+        else:
+            if not api_key:
+                print("[WARNING] No GEMINI_API_KEY found in settings!")
+            if genai is None:
+                print("[WARNING] google-generativeai module is not installed!")
 
         return cls._local_fallback_answer(query, snippets, intent)
 

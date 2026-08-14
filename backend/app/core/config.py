@@ -1,16 +1,17 @@
 import os
+from dotenv import load_dotenv
 
-try:
-    from dotenv import load_dotenv
-    backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    env_backend = os.path.join(backend_dir, ".env")
-    env_root = os.path.join(os.path.dirname(backend_dir), ".env")
-    if os.path.exists(env_backend):
-        load_dotenv(dotenv_path=env_backend)
-    elif os.path.exists(env_root):
-        load_dotenv(dotenv_path=env_root)
-except Exception:
-    pass
+# Find and load the .env file reliably
+backend_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+env_backend = os.path.join(backend_dir, ".env")
+env_root = os.path.join(os.path.dirname(backend_dir), ".env")
+
+if os.path.exists(env_backend):
+    load_dotenv(dotenv_path=env_backend)
+elif os.path.exists(env_root):
+    load_dotenv(dotenv_path=env_root)
+else:
+    load_dotenv()
 
 try:
     from pydantic_settings import BaseSettings

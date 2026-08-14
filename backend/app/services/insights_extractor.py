@@ -89,7 +89,7 @@ class InsightsExtractor:
         api_key = settings.GEMINI_API_KEY or ""
         if api_key and genai is not None:
             try:
-                genai.configure(api_key=api_key)
+                genai.configure(api_key=GEMINI_API_KEY)
                 model = genai.GenerativeModel("gemini-2.5-flash")
                 prompt = f"""
 Analyze the following document text and return ONLY a JSON object with this exact structure:
