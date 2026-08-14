@@ -4,9 +4,9 @@ import { ArrowUpRight } from "lucide-react";
 
 const CtaFooter = () => {
   return (
-    <section className="relative py-32 px-6 md:px-16 lg:px-24 text-center z-10">
+    <section className="relative py-20 md:py-32 px-6 md:px-16 lg:px-24 text-center z-10">
       <div className="relative z-10 mx-auto max-w-4xl">
-        <h2 className="text-5xl md:text-6xl lg:text-7xl font-heading italic text-white tracking-tight leading-[0.85] max-w-3xl mx-auto mb-4">
+        <h2 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-heading italic text-white tracking-tight leading-[1.1] md:leading-[0.85] max-w-3xl mx-auto mb-6">
           Your next website starts here.
         </h2>
         <p className="text-white/60 font-body font-light text-sm md:text-base max-w-xl mx-auto mb-8">

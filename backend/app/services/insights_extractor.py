@@ -3,10 +3,7 @@ import re
 from collections import Counter
 from app.core.config import settings
 
-try:
-    import google.generativeai as genai
-except ModuleNotFoundError:
-    genai = None
+from app.services.groq_client import groq_client
 
 STOPWORDS = {
     "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't",
@@ -86,11 +83,8 @@ class InsightsExtractor:
 
     @classmethod
     def generate_document_insights(cls, full_text: str) -> dict:
-        api_key = settings.GEMINI_API_KEY or ""
-        if api_key and genai is not None:
+        if groq_client.client:
             try:
-                genai.configure(api_key=GEMINI_API_KEY)
-                model = genai.GenerativeModel("gemini-2.5-flash")
                 prompt = f"""
 Analyze the following document text and return ONLY a JSON object with this exact structure:
 {{
@@ -103,12 +97,17 @@ Analyze the following document text and return ONLY a JSON object with this exac
 Document Content:
 {full_text[:10000]}
 """
-                response = model.generate_content(prompt)
-                parsed = json.loads(response.text.strip('`').strip('json').strip())
+                chat_completion = groq_client.client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=groq_client.model,
+                    response_format={"type": "json_object"}
+                )
+                response_text = chat_completion.choices[0].message.content.strip()
+                parsed = json.loads(response_text)
                 if isinstance(parsed, dict) and "summary" in parsed and "keywords" in parsed:
                     return parsed
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ERROR] Groq insights extraction failed: {e}")
 
         return cls._extract_nlp_insights(full_text)
 

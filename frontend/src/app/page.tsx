@@ -27,11 +27,11 @@ export default function Home() {
             <span className="text-xs uppercase tracking-widest text-white/80">Enterprise RAG for Document Teams</span>
           </div>
 
-          <h1 className="text-5xl md:text-7xl font-heading italic tracking-tight mb-6 leading-tight">
+          <h1 className="text-4xl sm:text-5xl md:text-7xl font-heading italic tracking-tight mb-6 leading-[1.1] md:leading-tight">
             DocuMind delivers professional document intelligence with a modern AI workspace.
           </h1>
 
-          <p className="mx-auto max-w-4xl text-white/60 font-body text-lg md:text-xl mb-10 font-light">
+          <p className="mx-auto max-w-4xl text-white/60 font-body text-base md:text-xl mb-10 font-light">
             Build a fully managed retrieval-augmented generation workflow with session-level document control, conversational search, and automatic insights.
           </p>
 

@@ -1,14 +1,21 @@
+import os
 import re
+from groq import Groq
 from app.core.config import settings
 
-try:
-    import google.generativeai as genai
-except ModuleNotFoundError:
-    genai = None
+class GroqClient:
+    def __init__(self):
+        self.api_key = settings.GROQ_API_KEY
+        if self.api_key:
+            self.client = Groq(api_key=self.api_key)
+        else:
+            self.client = None
+            print("[WARNING] GROQ_API_KEY not found in settings!")
+            
+        # Using a current Groq-hosted model
+        self.model = "llama-3.3-70b-versatile"
 
-class LLMGenerator:
-    @staticmethod
-    def detect_query_intent(query: str) -> str:
+    def detect_query_intent(self, query: str) -> str:
         q_lower = query.lower()
         
         # Check explicit length keywords
@@ -25,8 +32,7 @@ class LLMGenerator:
 
         return "standard"
 
-    @classmethod
-    def _local_fallback_answer(cls, query: str, snippets: list[str], intent: str) -> str:
+    def _local_fallback_answer(self, query: str, snippets: list[str], intent: str) -> str:
         """Intelligent local synthesis of passages when LLM API is unavailable."""
         query_words = set(re.findall(r'\b[a-zA-Z]{3,}\b', query.lower()))
         
@@ -70,21 +76,15 @@ class LLMGenerator:
                 ans += "."
             return f"Based on the uploaded documents: {ans}"
 
-    @classmethod
-    def generate_answer(cls, query: str, snippets: list[str]) -> str:
+    def generate_answer(self, query: str, snippets: list[str]) -> str:
         if not snippets:
             return "No relevant content was found in this workspace. Please upload documents and try again."
 
-        intent = cls.detect_query_intent(query)
-        api_key = settings.GEMINI_API_KEY or ""
-
-        if api_key and genai is not None:
+        intent = self.detect_query_intent(query)
+        
+        if self.client:
             try:
-                print(f"[DEBUG] Gemini API Key loaded: {api_key[:8]}...")
-                genai.configure(api_key=api_key)
-                
-                # Using a valid Google model ID (gemini-1.5-flash)
-                model = genai.GenerativeModel("gemini-3.6-flash")
+                print(f"[DEBUG] Groq API Key loaded: {self.api_key[:8]}...")
                 
                 if intent == "short":
                     length_instruction = "Deliver a concise, direct, 1-2 sentence answer (20-40 words)."
@@ -105,24 +105,28 @@ User Query:
 Retrieved Document Passages:
 {chr(10).join(snippets[:6])}
 """
-                print("[DEBUG] Sending request to Gemini API...")
-                response = model.generate_content(prompt)
-                ans = response.text.strip()
+                print("[DEBUG] Sending request to Groq API...")
+                chat_completion = self.client.chat.completions.create(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": prompt,
+                        }
+                    ],
+                    model=self.model,
+                )
+                ans = chat_completion.choices[0].message.content.strip()
                 
                 if ans:
-                    print("[SUCCESS] Answer received from Gemini API!")
+                    print("[SUCCESS] Answer received from Groq API!")
                     return ans
                     
             except Exception as e:
-                print(f"[ERROR] Gemini API call failed: {e}")
+                print(f"[ERROR] Groq API call failed: {e}")
                 print("[INFO] Falling back to local synthesis...")
-
         else:
-            if not api_key:
-                print("[WARNING] No GEMINI_API_KEY found in settings!")
-            if genai is None:
-                print("[WARNING] google-generativeai module is not installed!")
+            print("[WARNING] Groq client not initialized!")
 
-        return cls._local_fallback_answer(query, snippets, intent)
+        return self._local_fallback_answer(query, snippets, intent)
 
-llm_generator = LLMGenerator()
+groq_client = GroqClient()

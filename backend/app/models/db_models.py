@@ -25,6 +25,7 @@ class Session(Base):
 
     workspace = relationship("Workspace", back_populates="sessions")
     documents = relationship("Document", back_populates="session", cascade="all, delete-orphan")
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
 
 class Document(Base):
     __tablename__ = "documents"
@@ -52,9 +53,11 @@ class ChatMessage(Base):
 
     id = Column(String, primary_key=True, index=True)
     workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    session_id = Column(String, ForeignKey("sessions.id"), nullable=True)
     role = Column(String, nullable=False) # user, assistant
     content = Column(Text, nullable=False)
     citations = Column(JSON, nullable=True)
     timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="messages")
+    session = relationship("Session", back_populates="messages")

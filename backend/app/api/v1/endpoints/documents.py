@@ -5,11 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.config import settings
-from app.models.db_models import Document, Workspace, Session
-from app.models.schemas import ChatQueryRequest, DocumentResponse, SessionAssignRequest
+from app.models.db_models import Document, Workspace, Session, ChatMessage
+from app.models.schemas import ChatQueryRequest, DocumentResponse, SessionAssignRequest, ChatMessageResponse
 from app.services.document_processor import DocumentProcessor
-from app.services.vector_store import vector_store
-from app.services.gemini_service import gemini_service
+from app.services.pinecone_store import pinecone_store as vector_store
+from app.services.rag_service import rag_service
 
 router = APIRouter()
 
@@ -27,7 +27,7 @@ async def process_document_background(doc_id: str, file_path: str, file_type: st
             vector_store.add_document_chunks(workspace_id, doc_id, filename, chunks)
             
             full_text = "\n".join([p["text"] for p in pages])
-            insights = gemini_service.generate_document_insights(full_text)
+            insights = rag_service.generate_document_insights(full_text)
             
             doc.status = "completed"
             doc.page_count = len(pages)
@@ -167,7 +167,29 @@ async def workspace_query(payload: ChatQueryRequest, db: AsyncSession = Depends(
                 except Exception:
                     pass
 
-    answer = gemini_service.generate_query_answer(payload.query, snippets)
+    answer = rag_service.generate_query_answer(payload.query, snippets)
+    
+    # Persist chat messages
+    user_msg = ChatMessage(
+        id=str(uuid.uuid4()),
+        workspace_id=payload.workspace_id,
+        session_id=payload.session_id,
+        role="user",
+        content=payload.query
+    )
+    db.add(user_msg)
+    
+    assistant_msg = ChatMessage(
+        id=str(uuid.uuid4()),
+        workspace_id=payload.workspace_id,
+        session_id=payload.session_id,
+        role="assistant",
+        content=answer,
+        citations=[{"doc_id": meta.get("doc_id"), "filename": meta.get("filename")} for meta in metadatas[:3]] # Simple citation extraction
+    )
+    db.add(assistant_msg)
+    await db.commit()
+
     return {"answer": answer, "results": {"documents": documents, "metadatas": metadatas}}
 
 @router.delete("/{doc_id}")
@@ -191,6 +213,11 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
     await db.commit()
 
     return {"message": "Document deleted"}
+
+@router.get("/session/{session_id}/messages", response_model=list[ChatMessageResponse])
+async def list_session_messages(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()))
+    return result.scalars().all()
 
 @router.get("/session/{session_id}/documents", response_model=list[DocumentResponse])
 async def list_session_documents(session_id: str, db: AsyncSession = Depends(get_db)):

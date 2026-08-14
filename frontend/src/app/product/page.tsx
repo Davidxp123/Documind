@@ -3,10 +3,10 @@ import Link from 'next/link';
 export default function ProductPage() {
   return (
     <main className="min-h-screen text-white selection:bg-white selection:text-black">
-      <section className="pt-24 pb-16 px-6 mx-auto max-w-6xl">
-        <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-10 backdrop-blur-xl">
-          <p className="text-xs uppercase tracking-[0.3em] text-white/40 mb-4">Product</p>
-          <h1 className="text-5xl md:text-6xl font-heading italic mb-6">DocuMind product overview</h1>
+      <section className="pt-20 md:pt-24 pb-16 px-4 md:px-6 mx-auto max-w-6xl">
+        <div className="rounded-[32px] border border-white/10 bg-white/[0.04] p-6 md:p-10 backdrop-blur-xl">
+          <p className="text-[10px] md:text-xs uppercase tracking-[0.3em] text-white/40 mb-4">Product</p>
+          <h1 className="text-3xl sm:text-4xl md:text-6xl font-heading italic mb-6 leading-tight">DocuMind product overview</h1>
           <p className="text-white/70 max-w-3xl leading-relaxed mb-8">
             DocuMind is a high-end retrieval-augmented generation workspace built for document teams. It combines session isolation, managed uploads and a powerful AI chat interface so enterprise users can build repeatable knowledge workflows.
           </p>

@@ -40,6 +40,7 @@ export default function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<SessionState[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState('');
+  const [activeTab, setActiveTab] = useState<'explorer' | 'chat' | 'insights'>('chat');
 
   const currentSession: SessionState = sessions.find((session) => session.id === currentSessionId) ?? {
     id: '',
@@ -92,6 +93,22 @@ export default function WorkspacePage() {
     }
   };
 
+  const fetchSessionMessages = async (sessionId: string) => {
+    try {
+      const response = await fetch(`${API_BASE}/documents/session/${sessionId}/messages`);
+      if (!response.ok) throw new Error(await response.text());
+      const messages = await response.json();
+      const formattedMessages = messages.map((m: any) => ({
+        role: m.role,
+        text: m.content
+      }));
+      setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, messages: formattedMessages } : s)));
+    } catch (err) {
+      console.error(err);
+      setError('Unable to fetch chat history.');
+    }
+  };
+
   const fetchWorkspaceSessions = async () => {
     try {
       const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`);
@@ -104,11 +121,15 @@ export default function WorkspacePage() {
       const normalized = data.map((session: any) => ({
         id: session.id,
         name: session.name,
-        messages: [{ role: 'assistant' as const, text: `Session ${session.name} ready. Upload documents to begin.` }],
+        messages: [],
         docs: [],
       }));
       setSessions(normalized);
-      setCurrentSessionId(normalized[0]?.id ?? '');
+      const firstSessionId = normalized[0]?.id;
+      if (firstSessionId) {
+        setCurrentSessionId(firstSessionId);
+        fetchSessionMessages(firstSessionId);
+      }
     } catch (err) {
       console.error(err);
       await createDefaultSession();
@@ -408,8 +429,33 @@ export default function WorkspacePage() {
   const { getRootProps, getInputProps, isDragActive } = useDropzone({ onDrop, multiple: true });
 
   return (
-    <div className="flex h-screen bg-black text-white overflow-hidden">
-      <aside className="w-72 border-r border-white/10 bg-white/[0.04] backdrop-blur-2xl p-5 flex flex-col justify-between">
+    <div className="flex h-screen bg-black text-white overflow-hidden flex-col lg:flex-row">
+      {/* Mobile Tab Bar */}
+      <div className="lg:hidden flex border-b border-white/10 bg-white/[0.04] backdrop-blur-2xl flex-shrink-0">
+        <button
+          onClick={() => setActiveTab('explorer')}
+          className={`flex-1 py-4 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${activeTab === 'explorer' ? 'bg-white/10 text-white border-b-2 border-purple-400' : 'text-white/40'}`}
+        >
+          Sessions
+        </button>
+        <button
+          onClick={() => setActiveTab('chat')}
+          className={`flex-1 py-4 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${activeTab === 'chat' ? 'bg-white/10 text-white border-b-2 border-purple-400' : 'text-white/40'}`}
+        >
+          Chat
+        </button>
+        <button
+          onClick={() => setActiveTab('insights')}
+          className={`flex-1 py-4 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${activeTab === 'insights' ? 'bg-white/10 text-white border-b-2 border-purple-400' : 'text-white/40'}`}
+        >
+          Insights
+        </button>
+      </div>
+
+      <aside className={`
+        ${activeTab === 'explorer' ? 'flex' : 'hidden'} 
+        lg:flex lg:w-72 border-r border-white/10 bg-white/[0.04] backdrop-blur-2xl p-5 flex-col justify-between overflow-y-auto h-full flex-shrink-0
+      `}>
         <div className="space-y-6">
           <div>
             <div className="flex items-center gap-2 mb-4">
@@ -422,7 +468,10 @@ export default function WorkspacePage() {
                 {sessions.map((session) => (
                   <div key={session.id} className="space-y-2">
                     <button
-                      onClick={() => setCurrentSessionId(session.id)}
+                      onClick={() => {
+                        setCurrentSessionId(session.id);
+                        if (window.innerWidth < 1024) setActiveTab('chat');
+                      }}
                       className={`w-full text-left rounded-2xl px-3 py-2 text-xs ${session.id === currentSessionId ? 'bg-white/10 text-white' : 'bg-transparent text-white/70 hover:bg-white/10'} transition-all`}
                     >
                       {session.name}
@@ -499,22 +548,25 @@ export default function WorkspacePage() {
             ) : null}
           </div>
         </div>
-        <div className="text-xs text-white/30 font-light">Workspace ID: {workspaceId}</div>
+        <div className="text-xs text-white/30 font-light mt-6">Workspace ID: {workspaceId}</div>
       </aside>
 
-      <main className="flex-[5] flex flex-col border-r border-white/10">
-        <header className="px-6 py-4 border-b border-white/10 flex items-center justify-between">
+      <main className={`
+        ${activeTab === 'chat' ? 'flex' : 'hidden'}
+        lg:flex lg:flex-[5] flex-col border-r border-white/10 h-full overflow-hidden
+      `}>
+        <header className="px-6 py-4 border-b border-white/10 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">
             <Sparkles className="w-5 h-5 text-purple-400" />
             <div>
               <p className="text-xs uppercase tracking-[0.3em] text-white/40">AI Assistant</p>
-              <h1 className="text-2xl font-heading italic">Conversation workspace</h1>
+              <h1 className="text-xl md:text-2xl font-heading italic">Conversation workspace</h1>
             </div>
           </div>
-          <div className="text-xs text-white/50">Active session: {currentSession.name}</div>
+          <div className="text-[10px] md:text-xs text-white/50">Active: {currentSession.name}</div>
         </header>
 
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-6">
           <div className="space-y-6">
             {currentMessages.map((message, index) => (
               <div
@@ -531,8 +583,8 @@ export default function WorkspacePage() {
                 <div
                   className={`p-4 rounded-3xl text-sm leading-relaxed whitespace-pre-wrap ${
                     message.role === 'user'
-                      ? 'bg-white/10 border border-white/15 text-white max-w-[75%]'
-                      : 'bg-white/[0.04] border border-white/10 text-white/90 max-w-[85%]'
+                      ? 'bg-white/10 border border-white/15 text-white max-w-[85%] md:max-w-[75%]'
+                      : 'bg-white/[0.04] border border-white/10 text-white/90 max-w-[90%] md:max-w-[85%]'
                   }`}
                 >
                   {message.text}
@@ -545,8 +597,10 @@ export default function WorkspacePage() {
               </div>
             ))}
           </div>
+        </div>
 
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <div className="p-4 md:p-6 border-t border-white/10 bg-black/20 backdrop-blur-md flex-shrink-0">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <input
               type="text"
               value={input}
@@ -558,14 +612,17 @@ export default function WorkspacePage() {
             <button
               onClick={handleSend}
               disabled={currentSession.docs.some((d) => d.status !== 'completed')}
-              className={`liquid-glass-strong rounded-full px-5 py-3 text-sm text-white transition-all ${currentSession.docs.some((d) => d.status !== 'completed') ? 'opacity-50 cursor-not-allowed bg-white/10' : 'hover:bg-white/10'}`}>
+              className={`liquid-glass-strong rounded-full px-8 py-3 text-sm font-medium text-white transition-all ${currentSession.docs.some((d) => d.status !== 'completed') ? 'opacity-50 cursor-not-allowed bg-white/10' : 'hover:bg-white/10'}`}>
               Ask
             </button>
           </div>
         </div>
       </main>
 
-      <aside className="w-96 bg-white/[0.04] backdrop-blur-2xl p-6 space-y-6 overflow-y-auto">
+      <aside className={`
+        ${activeTab === 'insights' ? 'flex' : 'hidden'}
+        lg:flex lg:w-80 xl:w-96 bg-white/[0.04] backdrop-blur-2xl p-6 flex-col gap-6 overflow-y-auto h-full flex-shrink-0
+      `}>
         <div className="flex items-center gap-2">
           <BarChart2 className="w-5 h-5 text-white/70" />
           <h2 className="text-xl font-heading italic">Session Insights</h2>
@@ -601,13 +658,16 @@ export default function WorkspacePage() {
             {documents.map((doc) => (
               <div key={doc.id} className="rounded-3xl border border-white/10 bg-black/10 p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <div>
-                    <p className="text-sm text-white">{doc.filename}</p>
+                  <div className="min-w-0">
+                    <p className="text-sm text-white truncate" title={doc.filename}>{doc.filename}</p>
                     <p className="text-[11px] text-white/50">{doc.file_type.toUpperCase()}</p>
                   </div>
                   <button
-                    onClick={() => assignDocumentToSession(doc, currentSessionId)}
-                    className="text-[11px] uppercase tracking-[0.2em] text-white/60 hover:text-white"
+                    onClick={() => {
+                      assignDocumentToSession(doc, currentSessionId);
+                      if (window.innerWidth < 1024) setActiveTab('explorer');
+                    }}
+                    className="text-[11px] uppercase tracking-[0.2em] text-white/60 hover:text-white flex-shrink-0"
                   >
                     Add
                   </button>

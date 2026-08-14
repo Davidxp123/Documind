@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.db_models import Workspace, Session, Document
 from app.models.schemas import WorkspaceCreate, WorkspaceResponse, SessionCreate, SessionResponse
-from app.services.vector_store import vector_store
+from app.services.pinecone_store import pinecone_store as vector_store
 
 router = APIRouter()
 

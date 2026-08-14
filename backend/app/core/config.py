@@ -27,7 +27,12 @@ except ImportError:
 class Settings(BaseSettings):
     PROJECT_NAME: str = "DocMind AI Workspace"
     API_V1_STR: str = "/api/v1"
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    
+    # LLM & Vector DB
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")  # DEPRECATED: Moving to Groq
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
+    PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "docmind-index")
     
     # Paths
     BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

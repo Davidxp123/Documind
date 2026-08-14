@@ -56,6 +56,7 @@ class ChatQueryRequest(BaseModel):
 
 class ChatMessageResponse(BaseModel):
     id: str
+    session_id: Optional[str] = None
     role: str
     content: str
     citations: Optional[List[Any]] = None

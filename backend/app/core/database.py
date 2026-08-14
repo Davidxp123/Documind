@@ -28,3 +28,8 @@ def _ensure_sqlite_schema(conn):
     columns = [col["name"] for col in inspector.get_columns("documents")]
     if "session_id" not in columns:
         conn.execute(text("ALTER TABLE documents ADD COLUMN session_id VARCHAR"))
+    
+    # Add session_id to chat_messages if it doesn't exist
+    columns_chat = [col["name"] for col in inspector.get_columns("chat_messages")]
+    if "session_id" not in columns_chat:
+        conn.execute(text("ALTER TABLE chat_messages ADD COLUMN session_id VARCHAR"))

@@ -1,210 +1,194 @@
-# DocuMind — UI Polish, Workspace Expansion & Full Responsiveness
+# Task: Migrate DocuMind backend to LangGraph + Groq + Pinecone
 
-## Project Context
+## Objective
 
-You are enhancing **DocuMind**, an existing, fully-functional Next.js project. It is production-ready and pushed to GitHub. The stack and current state:
+Refactor the FastAPI backend so that:
+- Vector storage moves from local Chroma (`storage/chroma_db/`) to **Pinecone**.
+- LLM calls for query answers and document insights move from **Gemini** to **Groq**.
+- The retrieve → generate flow is orchestrated by a **LangGraph** `StateGraph` instead of plain function calls.
+- All existing API routes and response shapes in `documents.py` and `workspaces.py` stay unchanged — only the service layer underneath changes.
 
-- **Landing / Home page (`/`)** — Cinematic dark theme with a **constantly-running animated background** and glass-morphic containers.
-- **Content pages** — `/product`, `/pricing`, `/about` — all styled consistently with the landing page, using the same glass-morphism language.
-- **Workspace page** — `/workspace/[workspaceId]` — a single **fixed-size box** overlaid on the animated background, containing three panels:
-  - **Left**: Session Explorer (create / rename / delete sessions, document upload, remove/delete documents, processing status)
-  - **Middle**: AI Assistant conversation workspace (chat with uploaded documents)
-  - **Right**: Session Insights (executive summary), Top Keywords, Workspace Document Library
+Do not change the request/response schemas in `app/models/schemas.py` unless a field is strictly necessary for the new services (e.g. adding an optional `pinecone` health check field is fine; renaming existing fields is not).
 
-Everything currently works end-to-end. Your job is to make **three carefully scoped, additive improvements** without breaking or altering the existing look, feel, animations, colors, typography, or functionality.
+## Current structure (before)
 
----
+```
+backend/app/
+├── api/v1/endpoints/documents.py
+├── api/v1/endpoints/workspaces.py
+├── core/config.py
+├── core/database.py
+├── models/db_models.py
+├── models/schemas.py
+├── services/document_processor.py
+├── services/vector_store.py       # Chroma-backed
+├── services/gemini_service.py     # thin wrapper -> llm_generator / insights_extractor
+├── services/llm_generator.py      # Gemini genai calls + local fallback
+└── services/insights_extractor.py # Gemini-based summary/keywords/timeline/entities
+```
 
-## ⚠️ CRITICAL RULES — READ BEFORE MAKING ANY CHANGE
+## Target structure (after)
 
-1. **Zero functionality breaking.** Do not modify backend hooks, state management, session handling, file uploads, chat logic, insights generation, or API connections.
-2. **Preserve the visual theme.** The dark glass-morphism aesthetic, typography, color palette, and animated background must remain **exactly as they are**.
-3. **Additive changes only.** Prefer Tailwind utility classes already in the project. Do not refactor, rename, restructure, or "clean up" working code.
-4. **No new dependencies** unless absolutely necessary.
-5. **Preserve animated background visibility** through every glass container. Borders and shadows must be subtle enough that the flowing background is still clearly seen through the cards.
-6. **Minimal edits.** If a change can be done with a single class adjustment, do exactly that — nothing more.
-7. After every edit, ask yourself: _"Does the page still look and behave the same, only better and more adaptive?"_ If not, revert.
+```
+backend/app/
+├── api/v1/endpoints/documents.py       # unchanged interface; calls rag_service instead of gemini_service
+├── api/v1/endpoints/workspaces.py      # unchanged
+├── core/config.py                      # + GROQ_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME
+├── core/database.py                    # unchanged
+├── graph/
+│   ├── __init__.py
+│   ├── state.py                        # NEW - shared LangGraph state schema
+│   ├── nodes.py                        # NEW - retrieve_node, generate_node, synthesize_node, insights_node
+│   └── workflow.py                     # NEW - builds and compiles the StateGraph
+├── models/db_models.py                 # unchanged
+├── models/schemas.py                   # unchanged unless noted above
+├── services/document_processor.py      # unchanged
+├── services/pinecone_store.py          # NEW - replaces vector_store.py
+├── services/groq_client.py             # NEW - replaces llm_generator.py
+├── services/insights_extractor.py      # MODIFIED - calls groq_client instead of Gemini
+├── services/rag_service.py             # NEW - replaces gemini_service.py, invokes the compiled graph
+├── services/vector_store.py            # DELETE after pinecone_store.py is verified working
+├── services/gemini_service.py          # DELETE after rag_service.py is verified working
+└── services/llm_generator.py           # DELETE after groq_client.py is verified working
+```
 
----
+## Step-by-step instructions
 
-## Task 1 — Enhanced Glass-Morphic Borders Across All Pages
+### 1. Dependencies
 
-### Goal
+In `backend/requirements.txt`:
+- Remove: `google-generativeai`, `chromadb` (and any Chroma-only transitive deps not needed elsewhere)
+- Add: `langgraph`, `langchain-groq`, `groq`, `pinecone`
 
-Make the edges of every glass-morphic container/card **subtle, crisp, and clearly defined** against the dark animated background — without disturbing the glassmorphism, blur, or background visibility.
+### 2. Environment / config
 
-### Affected Routes
+In `app/core/config.py`, add to the `Settings` class:
+```python
+GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
+PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "docmind-index")
+```
+Keep the existing `.env` discovery logic as-is. Do not remove `GEMINI_API_KEY` from `.env.example` yet — leave a comment marking it deprecated, in case of rollback.
 
-- `/` (Landing / Home)
-- `/product`
-- `/pricing`
-- `/about`
-- `/workspace/[workspaceId]` (apply the same treatment to workspace cards **only if** they share the same glass component; otherwise leave workspace panels visually untouched)
+### 3. `app/services/pinecone_store.py` (replaces `vector_store.py`)
 
-### Exact Specification
+Preserve the exact same public interface as the current `vector_store` singleton so `documents.py` doesn't need changes beyond the import:
+- `add_document_chunks(workspace_id: str, doc_id: str, filename: str, chunks: list[str]) -> None`
+- `query(workspace_id: str, query_text: str, top_k: int = 6, doc_ids: list[str] | None = None) -> dict` — must return a dict with `documents` and `metadatas` keys in the same shape currently consumed in `documents.py` (`workspace_query`), including per-chunk `filename` and `page` in metadata.
+- `delete_document_chunks(doc_id: str) -> None`
 
-- **Border width**: `1px` (do not exceed)
-- **Border color**: use Tailwind `border-white/15` as the baseline. If it looks too faint on top of bright regions of the animated background, upgrade to `border-white/20`. **Never exceed `border-white/20`.**
-- **Border style**: `solid`
-- **Optional subtle inner highlight** (only if it enhances the edge without darkening the card): `shadow-[inset_0_1px_0_0_rgba(255,255,255,0.08)]`. Skip if unsure.
-- **Do NOT change**:
-  - `backdrop-blur-*` values
-  - background opacity / `bg-white/5` etc.
-  - `border-radius`
-  - existing `box-shadow` on the outside
-  - padding, margins, or internal layout
+Implementation notes:
+- Initialize the Pinecone client using `settings.PINECONE_API_KEY`.
+- Use `settings.PINECONE_INDEX_NAME`; create the index on startup if it doesn't exist (serverless spec, cosine metric, dimension matching whatever embedding model is chosen).
+- Use workspace_id as a metadata filter (or namespace) so queries stay scoped per workspace, matching current Chroma behavior.
+- Pick and document an embedding model/provider for turning chunks into vectors (this wasn't specified — use a reasonable default and call it out clearly in code comments so it's easy to swap later).
 
-### Implementation Guidance
+### 4. `app/services/groq_client.py` (replaces `llm_generator.py`)
 
-- Locate the **shared glass-card class or component** used across these pages (likely a reusable component or a Tailwind class combo like `bg-white/5 backdrop-blur-xl rounded-2xl`).
-- Update the **single source of truth** so all cards inherit the border automatically. If cards are styled per-page, apply the **identical border spec** to each occurrence.
-- Do not add borders that push content around — 1px borders should not cause any layout shift.
+Keep the same public surface as `llm_generator`:
+- `detect_query_intent(query: str) -> str` — keep this logic as-is, it's provider-agnostic.
+- `generate_answer(query: str, snippets: list[str]) -> str`
+- Keep `_local_fallback_answer` as-is for when the Groq call fails or `GROQ_API_KEY` is missing — same silent-fallback behavior, but keep the `[DEBUG]`/`[WARNING]`/`[ERROR]` print statements so failures stay diagnosable in logs.
 
-### Acceptance Criteria
+Implementation notes:
+- Use the `groq` Python SDK or `langchain-groq`'s `ChatGroq` — pick one and be consistent with what `app/graph/nodes.py` uses.
+- Use a current Groq-hosted model (e.g. `llama-3.3-70b-versatile`) — don't hardcode a model id without checking it's still active on Groq's model list.
+- Preserve the three `length_instruction` variants (short / detailed / standard) from the current prompt logic.
 
-- Every glass container on `/`, `/product`, `/pricing`, `/about` has a barely-there but clearly noticeable white edge.
-- The animated background is still fully visible through each card.
-- No layout shift, no color change, no typography change.
+### 5. `app/services/insights_extractor.py` (modified in place)
 
----
+Swap whatever Gemini calls exist here for `groq_client` calls, keeping the existing return shape (`summary`, `keywords`, `timeline`, `entities`) that `documents.py`'s `process_document_background` already expects.
 
-## Task 2 — Workspace Layout Expansion
+### 6. `app/graph/state.py` (new)
 
-### Goal
+Define a `TypedDict` (or Pydantic model) representing the shared graph state, at minimum:
+```python
+class RAGState(TypedDict):
+    query: str
+    workspace_id: str
+    doc_ids: list[str] | None
+    snippets: list[str]
+    metadatas: list[dict]
+    answer: str
+```
+Add a separate state type for the ingestion/insights flow if it doesn't share enough fields with the query flow to reuse one state.
 
-Slightly **widen the workspace container** so the three internal panels have more horizontal breathing room, especially the middle conversation area and the right insights panel.
+### 7. `app/graph/nodes.py` (new)
 
-### Affected Route
+Implement as plain functions taking and returning `RAGState`:
+- `retrieve_node(state)` — calls `pinecone_store.query(...)`, populates `snippets`/`metadatas`.
+- `generate_node(state)` — calls `groq_client.generate_answer(...)`, populates `answer`.
+- `synthesize_node(state)` — final formatting pass on `answer` if needed (can be a no-op pass-through initially).
+- `insights_node(state)` — used by the ingestion graph, wraps `insights_extractor`.
 
-- `/workspace/[workspaceId]`
+### 8. `app/graph/workflow.py` (new)
 
-### Exact Specification
+Build two compiled graphs (or one graph with conditional entry points):
+- A **query graph**: `retrieve_node → generate_node → synthesize_node`.
+- An **ingestion graph**: chunking/embedding (via `pinecone_store`) → `insights_node`.
 
-- Locate the **outer wrapper** of the workspace box (the element that constrains the three-column layout).
-- Change **only its `max-width`**:
-  - If it is currently `max-w-6xl` or `max-w-7xl`, upgrade it to approximately `max-w-[1440px]` (a subtle, tasteful widening).
-  - If a bolder expansion is desired for very large monitors, use `max-w-[95vw]` or `max-w-[1800px]` — but confirm the three panels still look balanced, not stretched thin.
-- Keep the wrapper centered: `mx-auto`.
-- Keep existing horizontal padding intact (e.g., `px-4 md:px-8 lg:px-12` if already used).
-- **Do NOT change**:
-  - The container's height
-  - The internal 3-column ratio (roughly `25% – 50% – 25%` or `1fr 2fr 1fr` — whatever it currently is, keep it)
-  - Gap/spacing between the three panels
-  - Vertical padding, border-radius, background, or shadow of the workspace box
-  - The animated background behind it
+Export compiled graph instances that `rag_service.py` can invoke directly, e.g. `query_graph`, `ingestion_graph`.
 
-### Implementation Guidance
+### 9. `app/services/rag_service.py` (replaces `gemini_service.py`)
 
-- Adjust the `max-width` utility on the outer wrapper only.
-- The three internal columns should naturally expand proportionally via the existing grid/flex rules — do **not** manually re-tune column widths.
+Same public interface as `gemini_service`:
+```python
+class RAGService:
+    @staticmethod
+    def generate_document_insights(full_text: str) -> dict: ...
+    @staticmethod
+    def generate_query_answer(query: str, snippets: list[str]) -> str: ...
 
-### Acceptance Criteria
+rag_service = RAGService()
+```
+Internally these should invoke the compiled LangGraph graphs from `app/graph/workflow.py` rather than calling services directly, so the graph is the single orchestration point.
 
-- The workspace box is visibly a bit wider on large screens (`≥ 1440px`).
-- All three internal panels remain balanced and use the same proportions.
-- Chat messages and insight cards get slightly more breathing room.
-- Nothing else on the page moves or changes.
+### 10. `app/api/v1/endpoints/documents.py`
 
----
+Update the single import line:
+```python
+from app.services.rag_service import rag_service
+```
+Replace all `gemini_service.` calls with `rag_service.` — same method names, no other changes needed in this file.
 
-## Task 3 — Full Project Responsiveness
+### 11. Cleanup
 
-### Goal
+Once the new services are verified working end-to-end (upload → insights populate, query → Groq-generated answer, Pinecone dashboard shows the index populated):
+- Delete `vector_store.py`, `gemini_service.py`, `llm_generator.py`.
+- Delete `backend/storage/chroma_db/` (no longer used).
+- Remove `google-generativeai` and `chromadb` fully from `requirements.txt` if not already done in step 1.
 
-Make every page seamlessly usable across mobile, tablet, laptop, and widescreen displays **without losing the premium desktop look**.
+## Verification checklist
 
-### Breakpoint Strategy (Tailwind mobile-first)
+- [ ] `pip install -r requirements.txt` succeeds with the new dependency set.
+- [ ] Uploading a document creates vectors in the Pinecone index (check Pinecone console) instead of `storage/chroma_db/`.
+- [ ] Document insights (summary/keywords/timeline/entities) are populated after upload, generated via Groq.
+- [ ] `/query` returns an answer generated by Groq (verify via Groq's usage dashboard, not just app behavior).
+- [ ] Local fallback still works if `GROQ_API_KEY` is unset (test by temporarily removing it).
+- [ ] No remaining imports of `google.generativeai`, `chromadb`, or the deleted service files anywhere in the codebase.
 
-- Mobile: `< 640px` (base)
-- Small tablet: `sm:` (`≥ 640px`)
-- Tablet: `md:` (`≥ 768px`)
-- Laptop: `lg:` (`≥ 1024px`)
-- Desktop: `xl:` (`≥ 1280px`)
-- Large desktop: `2xl:` (`≥ 1536px`)
+## Additional task: make the frontend fully responsive
 
-### General Responsive Rules (apply everywhere)
+Independent of the backend migration above, audit and fix responsiveness across the whole Next.js frontend (`frontend/src/app/` and `frontend/src/components/`). Do not change the existing glassmorphic visual style, colors, or the background video — only fix layout/sizing behavior across breakpoints.
 
-- Use responsive Tailwind utilities (`sm:`, `md:`, `lg:`, `xl:`) — do not remove existing desktop classes; layer responsive prefixes.
-- Use responsive font sizes (e.g., `text-4xl sm:text-5xl md:text-6xl lg:text-7xl`) instead of fixed values.
-- Minimum tap target of **44 × 44px** on mobile for all interactive elements.
-- All images / SVGs: `max-w-full h-auto`.
-- No horizontal scrollbars at **any** breakpoint from `320px` → `1920px`.
-- Reduce horizontal padding gracefully on mobile: `px-4 sm:px-6 lg:px-8`.
-- The animated background stays enabled on all viewports. **Do not disable it on mobile.** Only as a last resort, reduce its opacity slightly on mobile via a media query if performance is a proven problem.
+Pages/components in scope:
+- `app/page.tsx` (landing)
+- `app/about/page.tsx`
+- `app/pricing/page.tsx`
+- `app/product/page.tsx`
+- `app/workspace/[workspaceId]/page.tsx` (highest priority — has the most complex layout: session list, chat panel, insights/keywords panel, document library)
+- `components/Background/BackgroundVideo.tsx`
+- `components/landing/CtaFooter.tsx`
 
-### Page-by-Page Requirements
+Requirements:
+- No horizontal scrolling or clipped content at common breakpoints: mobile (~375px), tablet (~768px), laptop (~1280px), and wide desktop (~1920px).
+- On the workspace page specifically: the multi-column layout (sessions / chat / insights) should collapse gracefully on narrower screens (e.g. stacked or tab/drawer-based) rather than squeezing columns unreadably thin.
+- Glass containers keep their existing thin white edge styling at every breakpoint — don't lose it when switching to stacked/mobile layouts.
+- Text, buttons, and form inputs stay legible and tappable (minimum ~44px touch target) on mobile.
+- The background video continues playing behind content at all viewport sizes without being cropped in a way that hides key visual elements.
+- Use Tailwind's responsive utility classes (`sm:`, `md:`, `lg:`, `xl:`) consistently rather than fixed pixel widths, unless a fixed width is intentional (e.g. a max-width container).
 
-#### Navbar (all pages)
-
-- Below `md:`, collapse `Product`, `Pricing`, `About` links into a **hamburger menu** that opens a glass-morphic dropdown/overlay using the same styling language.
-- Keep the `DocuMind` logo on the left, hamburger on the right.
-- Keep the `Launch` button visible on tablet+; on very small screens (`< sm`), it may move into the menu.
-- No font, color, or button style changes — only responsive placement.
-
-#### Landing / Home (`/`)
-
-- Hero heading: scale down progressively — e.g., `text-4xl sm:text-5xl md:text-6xl lg:text-7xl` (adjust to your actual values).
-- CTA buttons (`Launch Workspace`, `View Product`): stack vertically on mobile (full or auto width), horizontal from `sm:` up.
-- Feature grid ("Higher fidelity document workflows" section): `grid-cols-1 md:grid-cols-2` (or match current desktop count).
-- Section vertical padding reduced on mobile.
-
-#### Product, Pricing, About (`/product`, `/pricing`, `/about`)
-
-- Multi-column grids → `grid-cols-1 md:grid-cols-2 lg:grid-cols-3` (match current desktop count).
-- Pricing cards: stack vertically on mobile, side-by-side from `md:` or `lg:`.
-- Long text blocks: `max-w-full` where needed to prevent overflow.
-- Ensure headings scale responsively (`text-2xl md:text-4xl` style patterns).
-
-#### Workspace (`/workspace/[workspaceId]`) — MOST DELICATE
-
-The three-panel layout cannot fit side-by-side on mobile/tablet. Adapt as follows:
-
-- **Desktop (`lg:` and up)**: Keep the current three-column layout **exactly as it is**, including the widened container from Task 2.
-- **Tablet (`md:` to `lg:`)**: Two-column layout — Session Explorer (left) + Conversation (right), with Session Insights moved **below**, full-width under both.
-- **Mobile (`< md:`)**: Single-column stacked layout in this order:
-  1. **Session Explorer** — collapsible, **collapsed by default**, with a chevron toggle header
-  2. **Conversation workspace** — main focus, full width, always expanded
-  3. **Session Insights** — collapsible, **collapsed by default**, with a chevron toggle header
-- Collapsible headers must use the **same glass aesthetic** — no new colors, no new fonts, no new icons beyond a simple chevron.
-- On mobile/tablet, switch the workspace container from fixed `max-width` to `w-full` with responsive horizontal padding.
-- Chat message bubbles must wrap correctly (`break-words`, `whitespace-pre-wrap` where relevant) and never overflow.
-- The `Ask a question…` input bar stays full-width and reachable on mobile (consider sticky bottom if it improves UX, but only if it does not disturb desktop).
-- The upload dropzone, session list, and document list must all remain fully functional on touch devices.
-
-### Implementation Guidance
-
-- Work page by page, top to bottom. Add responsive classes without removing existing ones.
-- Test after every page at these widths: **375px, 768px, 1024px, 1440px, 1920px**.
-- Use Chrome DevTools device presets: iPhone SE, iPhone 14 Pro, iPad Mini, iPad Pro, and 1920×1080 desktop.
-
-### Acceptance Criteria
-
-- Every page is fully usable and visually coherent at 375px, 768px, 1024px, 1440px, and 1920px.
-- No content is cut off, overlapping, or requires horizontal scrolling.
-- Workspace's three sections are accessible on mobile via a stacked/collapsible layout.
-- Desktop appearance is **100% identical** to the current state, aside from Tasks 1 and 2.
-- Navbar collapses to a hamburger below `md:` and works flawlessly.
-
----
-
-## Final Verification Checklist
-
-Before marking this task complete, confirm each item:
-
-- [ ] All glass containers on `/`, `/product`, `/pricing`, `/about` (and workspace if shared) have a subtle `border-white/15` (or up to `border-white/20`) 1px border.
-- [ ] The animated background is still fully visible through every glass container.
-- [ ] The `/workspace/[workspaceId]` container is slightly wider on desktop (`≥ 1440px` viewport); internal 3-column proportions unchanged.
-- [ ] No horizontal scrollbar appears on any page at any width from 320px to 1920px.
-- [ ] All pages render correctly at 375px, 768px, 1024px, 1440px, and 1920px.
-- [ ] Workspace collapses gracefully — 2-column on tablet, stacked/collapsible on mobile.
-- [ ] Navbar has a working hamburger menu below `md:`.
-- [ ] No existing feature (sessions, uploads, chat, insights, keywords, doc library) is altered or broken.
-- [ ] No new dependencies added unnecessarily.
-- [ ] No colors, fonts, animations, or component structures changed beyond the three tasks above.
-- [ ] `npm run build` completes without new warnings or errors.
-
----
-
-## Summary of Intent
-
-These three changes are **polish and adaptability improvements only**. The soul of the project — its dark, cinematic, glass-morphic aesthetic layered over a flowing animated background — must remain **exactly as it is**. Approach this as a careful restorer, not a redesigner. Small, precise, reversible edits only.
+Verification:
+- [ ] Manually resize the browser (or use device emulation) across the breakpoints above on every page listed and confirm no overflow, overlap, or clipped content.
+- [ ] Workspace page's three-panel layout is usable on mobile without horizontal scrolling.
+- [ ] Existing glassmorphic style (blur, white edges, background video) is unchanged, just responsive.
