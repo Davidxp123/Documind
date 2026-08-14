@@ -35,13 +35,16 @@ class DocumentProcessor:
             full_text = "\n".join([p.text for p in doc.paragraphs if p.text])
             pages_content.append({"page": 1, "text": full_text})
             
-        elif ext in ["xlsx", "csv"]:
+        elif ext in ["xlsx", "csv", "xls"]:
             if ext == "csv":
                 df = pd.read_csv(file_path)
+                pages_content.append({"page": 1, "text": df.to_markdown()})
             else:
-                df = pd.read_excel(file_path)
-            markdown_table = df.to_markdown()
-            pages_content.append({"page": 1, "text": markdown_table})
+                # Use openpyxl for xlsx, default engine might fail for some files
+                xl = pd.ExcelFile(file_path)
+                for sheet_name in xl.sheet_names:
+                    df = xl.parse(sheet_name)
+                    pages_content.append({"page": 1, "text": f"Sheet: {sheet_name}\n{df.to_markdown()}"})
             
         elif ext in ["png", "jpg", "jpeg"]:
             text = pytesseract.image_to_string(Image.open(file_path))
@@ -50,11 +53,11 @@ class DocumentProcessor:
         elif ext in ["pptx"]:
             prs = Presentation(file_path)
             for idx, slide in enumerate(prs.slides):
-                slide_text = []
+                slide_text_set = set()
                 for shape in slide.shapes:
-                    if hasattr(shape, "text"):
-                        slide_text.append(shape.text)
-                pages_content.append({"page": idx + 1, "text": "\n".join(slide_text)})
+                    if hasattr(shape, "text") and shape.text.strip():
+                        slide_text_set.add(shape.text.strip())
+                pages_content.append({"page": idx + 1, "text": "\n".join(slide_text_set)})
                 
         elif ext in ["html", "htm"]:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
