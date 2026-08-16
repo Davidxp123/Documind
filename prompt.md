@@ -1,194 +1,207 @@
-# Task: Migrate DocuMind backend to LangGraph + Groq + Pinecone
+# DocuMind — Production-Ready Bug Fixes & Workspace UI Redesign
 
-## Objective
+This is a combined, single-source spec. It contains two independently testable tracks:
 
-Refactor the FastAPI backend so that:
-- Vector storage moves from local Chroma (`storage/chroma_db/`) to **Pinecone**.
-- LLM calls for query answers and document insights move from **Gemini** to **Groq**.
-- The retrieve → generate flow is orchestrated by a **LangGraph** `StateGraph` instead of plain function calls.
-- All existing API routes and response shapes in `documents.py` and `workspaces.py` stay unchanged — only the service layer underneath changes.
+- **PART A — Functional Bug Fixes** (upload/polling loop, multi-file-type answering, Excel ingestion error, weak RAG grounding, full multi-format robustness)
+- **PART B — Workspace UI Redesign** (structural/layout only — theme, colors, typography, icons must NOT change; must match `Updated-UI.png` pixel-for-pixel in structure)
 
-Do not change the request/response schemas in `app/models/schemas.py` unless a field is strictly necessary for the new services (e.g. adding an optional `pinecone` health check field is fine; renaming existing fields is not).
+Implement Part A and Part B as separate, independently testable changes. Do not mix concerns: bug fixes must not alter visual design, and the UI redesign must not alter backend/API behavior beyond what's needed to support the new layout. This repo was just `git reset --hard` to the latest clean commit — treat this as the authoritative spec for rebuilding both tracks correctly and completely, production-ready, no half-measures.
 
-## Current structure (before)
+---
+
+## PART A — FUNCTIONAL BUG FIXES
+
+### A1. Upload gets stuck in an infinite processing loop / "Unable to poll document status"
+
+**Observed behavior:** After uploading a document, the first attempt fails silently, a retry appears to succeed, but the pipeline status (Upload → Extraction → Embedding → Analysis → Ready) never resolves. The UI shows a persistent error: `Unable to poll document status`. Meanwhile Session Insights (executive summary) and Top Keywords still populate — meaning ingestion partially succeeds even though the frontend believes it failed.
+
+**Required fixes:**
+1. **Fix the root upload failure first.** Instrument the initial upload request (`POST /documents/upload` or equivalent) with server-side logging of status code, payload size, and content-type. Reproduce the "fails first, succeeds second" pattern and identify whether this is a race condition (e.g., workspace/session not yet created server-side when the file lands), a cold-start timing issue, or a duplicate-request issue from the frontend firing twice (check for double `onDrop`/double submit handlers, especially under React StrictMode or fast re-renders).
+2. **Fix the status polling endpoint** (`GET /documents/workspace/{workspaceId}` or the specific document status endpoint):
+   - Confirm the endpoint returns `200` with a well-formed JSON body in all normal states (`pending`, `processing`, `completed`, `failed`) — never an unhandled `500`.
+   - Add a distinct terminal `failed` status with an `error` field, so the frontend can stop polling and show a real error instead of looping forever.
+   - Add a max-retry / backoff ceiling on the frontend poller (e.g., stop after N attempts or T seconds, then surface a clear "Processing is taking longer than expected — retry?" state instead of an infinite loop).
+3. **Make the poller resilient to transient failures.** A single failed poll (network blip, 502, etc.) should not immediately show "Unable to poll document status" to the user — retry with exponential backoff (e.g., 3 retries) before surfacing an error state.
+4. **Reconcile the mismatch** between "processing appears stuck/failed" and "insights/keywords already generated." This strongly suggests the ingestion pipeline finishes but never writes/broadcasts the final `completed`/`ready` status. Audit the pipeline's last stage (Analysis → Ready) to confirm it always updates the document's status record, even if downstream insight-generation is what actually completes first. Status transitions and insight generation should not be able to diverge.
+5. Add a document-level `status: failed` UI state (not just an infinite spinner) with a manual "Retry processing" action.
+
+### A2. No response / wrong response when multiple documents of different types are attached, especially images
+
+**Observed behavior:** When a session includes multiple attachments of different types (PDF, DOCX, XLSX, PPTX, PNG), asking a question that references a specific file (e.g., "agile.png, use this and give me a summary for this image specifically") returns: *"No relevant text available… no relevant information could be found for 'agile.png'… a summary of the image is not possible."* Image-type documents are never actually being analyzed.
+
+**Required fixes:**
+1. **Confirm image ingestion path exists at all.** Text-based formats (PDF/DOCX/XLSX/PPTX) appear to go through a text-extraction → chunk → embed pipeline. Images likely have no equivalent path. Add one:
+   - On upload, if the file is an image (PNG/JPG/etc.), run it through a vision-capable step: either (a) a captioning/description model call, or (b) direct multimodal model calls at query time using the stored image, or (c) OCR when the image contains text/diagrams.
+   - Store the resulting description/OCR text as the image's "content" so it can be embedded and retrieved like any other document chunk, AND retain a reference to the raw image so a multimodal model can be called directly on it when the user asks about that specific file.
+2. **Fix per-file targeting.** When a user names a specific file in their query (e.g., "agile.png"), the retrieval layer must first check for an explicit filename match in the session's document list before falling back to semantic search. Currently the filename mention is not being resolved to the actual stored document at all — the system searches semantically and finds nothing, rather than looking up the file by name.
+3. **Fix multi-type context assembly.** When a session has mixed file types, the RAG context builder must merge chunks from all types (extracted text, table data from spreadsheets, slide text from presentations, and image descriptions/OCR) into a single ranked context, not just query the text-document index. Verify the retriever isn't silently filtering out non-text-indexed documents.
+4. **PPTX support:** add a dedicated extraction path for `.pptx` — slide text, speaker notes, and embedded images (routed through the same image pipeline as A2.1) — so slide decks are first-class citizens alongside PDF/DOCX/XLSX/images, not an afterthought.
+5. Add explicit test cases: (a) query mentioning an image filename directly, (b) query with no filename that should still consider an image if relevant, (c) session with PDF + XLSX + PPTX + PNG all present, asking a question that requires combining information from at least three of them.
+
+### A3. Excel files fail to upload — `Internal Server Error`
+
+**Observed console error:**
+```
+Error: Internal Server Error
+Source: src\app\workspace\[workspaceId]\page.tsx (205:33) @ eval
+203 |       try {
+204 |         const response = await fetch(`${API_BASE}/documents/workspace/${workspaceId}`);
+205 |         if (!response.ok) throw new Error(await response.text());
+206 |         const docs: DocumentStatus[] = await response.json();
+207 |         setDocuments(docs);
+```
+
+**Required fixes:**
+1. This is a **frontend surfacing a backend 500**, not a frontend bug. The fetch to `/documents/workspace/{workspaceId}` is failing server-side after an XLSX upload. Reproduce with the exact failing file and get the real backend stack trace/logs (the frontend only shows the generic response text).
+2. Likely causes to check on the backend document parser:
+   - The Excel parser (e.g., `openpyxl`/`pandas`/`xlsx`-parsing lib) throwing on a specific sheet structure (merged cells, multiple sheets, empty sheets, formulas vs. values, `.xls` vs `.xlsx`).
+   - The parser choking on `0 pages` metadata (per the screenshot, the XLSX shows "0 pages" and status "pending" — indicating the page/sheet count logic doesn't handle spreadsheets and may be throwing when it tries to compute a page count).
+   - An unhandled exception in the ingestion worker that then poisons the workspace's document-list query itself (i.e., one bad document's failed processing is breaking the endpoint that lists *all* documents for the workspace, rather than just that one document showing an error state).
+3. **Isolate failure blast radius:** one document's ingestion failure must never break the `GET /documents/workspace/{workspaceId}` listing endpoint for the whole workspace. Wrap per-document status resolution in try/catch so a single malformed record returns `status: failed` for that document while the rest of the list still loads.
+4. Add server-side validation + a clear 4xx (not 500) with a human-readable message when a file genuinely can't be parsed (e.g., corrupt/password-protected spreadsheet), so the frontend can show "This file couldn't be processed" instead of a generic Internal Server Error.
+5. On the frontend, wrap the `fetch(...)` in `page.tsx` with proper error typing so a backend 500 renders a friendly inline error/toast instead of an unhandled thrown error breaking the page.
+
+### A4. Answers are sometimes not well-grounded in document context
+
+**Observed behavior:** Responses are occasionally generic, not clearly tied to the uploaded content, or don't sufficiently answer the question.
+
+**Required fixes:**
+1. Once A2 is fixed (all file types properly chunked/embedded), re-evaluate whether this issue persists — a large share of "ungrounded answers" is likely just A2's missing image/spreadsheet/slide retrieval producing empty context.
+2. Log the actual retrieved context chunks per query (dev/debug mode only) to verify retrieval quality — check chunk size, overlap, and top-k value; overly small top-k or poor chunking (e.g., splitting mid-table for spreadsheets, mid-slide for decks) will produce weak grounding even when retrieval technically "works."
+3. Ensure the system prompt instructs the model to explicitly say when the retrieved context doesn't contain the answer, rather than guessing — but only after confirming retrieval itself is actually returning relevant chunks (per A2/A3 fixes).
+
+### A5. General multi-format robustness (production bar)
+
+- The ingestion pipeline must treat PDF, DOCX, XLSX, PPTX, and common image formats (PNG/JPG) as equally first-class inputs — no format should be "supported in name only."
+- A session with any combination of these formats attached simultaneously must answer questions that require combining information across formats (e.g., a number from a spreadsheet plus a claim from a PDF plus a diagram from an image) in a single coherent response.
+- Every ingestion failure, for any format, must degrade gracefully to a per-document `failed` status with a human-readable reason — never a workspace-wide crash or an unhandled exception bubbling to the frontend.
+
+---
+
+## PART B — WORKSPACE UI REDESIGN
+
+### B0. Scope discipline (read this first)
+
+This is a **structural/layout refactor only**, scoped strictly to the **workspace/conversation route** (e.g., `src/app/workspace/[workspaceId]/page.tsx` and its child components).
+
+**Do not change:** colors, purple accent system, glow/blur effects, typography/fonts, border-radius, icon set, button visual styles, card styling, or the animated background video. Every visual token currently in use must be reused as-is — this task changes *where* things sit, not *how* they look.
+
+**Do change:** page structure, container width/height, column layout, sticky/scroll behavior, and component placement, so the workspace matches the attached reference design (`Updated-UI.png`) exactly — a three-column layout modeled on ChatGPT / Claude / Gemini.
+
+**Remove entirely:** the standalone "Workspace Document Library" panel/section on the right side of the current build. Document management moves fully into the left sidebar. Do not keep a second, separate document list anywhere else.
+
+### B1. Reference layout (use `Updated-UI.png` as the literal target)
+
+The reference image shows the target structure exactly — build to match it:
+
+- **Left column (~260–300px):** header "Workspace" with sparkle icon → `SESSIONS` block → `DOCUMENTS` block.
+- **Center column (flexible, largest width):** header "AI ASSISTANT / Conversation" (left) + "Active session: {name}" (right) → scrollable message thread with user/AI bubbles → compact horizontal `Processing Status` timeline → chat input positioned directly below the timeline, close to the conversation — **not** stranded far down the page.
+- **Right column (~300–340px):** header "Session Insights" with chart icon → `EXECUTIVE SUMMARY` card → `TOP KEYWORDS` pill cluster.
+- The animated purple/blue background video remains visible in the page's outer margins/gutters — the three-column workspace container should sit as a bounded, wide panel with visible background around/behind it, not a layout that fills 100% of the viewport edge-to-edge and hides the video.
+
+### B2. Page-level layout structure
+
+Replace the current vertically-stacked/overflow-prone structure with a fixed-viewport, three-pane CSS grid (or flex) layout so the page itself never scrolls — only the panes inside it do.
 
 ```
-backend/app/
-├── api/v1/endpoints/documents.py
-├── api/v1/endpoints/workspaces.py
-├── core/config.py
-├── core/database.py
-├── models/db_models.py
-├── models/schemas.py
-├── services/document_processor.py
-├── services/vector_store.py       # Chroma-backed
-├── services/gemini_service.py     # thin wrapper -> llm_generator / insights_extractor
-├── services/llm_generator.py      # Gemini genai calls + local fallback
-└── services/insights_extractor.py # Gemini-based summary/keywords/timeline/entities
+[ Workspace Grid — flex: 1, min-height: 0, overflow: hidden ]
+   ├── Left Sidebar   (fixed width ~280px, own overflow-y: auto)
+   ├── Center Column   (flex: 1, min-width: 0, display: flex, flex-direction: column)
+   │      ├── Conversation Header (fixed height)
+   │      ├── Messages Scroll Area (flex: 1, overflow-y: auto, min-height: 0)
+   │      ├── Processing Status timeline (fixed height, compact, horizontal)
+   │      └── Chat Input (fixed height, non-shrinking, sits immediately below the timeline)
+   └── Right Sidebar  (fixed width ~320px, own overflow-y: auto)
 ```
 
-## Target structure (after)
+Key implementation notes:
+- Use `height: 100vh` (or `100dvh` for mobile browser chrome correctness) on the outer app shell, with `overflow: hidden` at that level, so nothing outside the three panes can push the page taller than the viewport.
+- Each of the three columns manages its **own** vertical scroll (`overflow-y: auto; min-height: 0;`) — this is what prevents "excessive scrolling" and keeps the chat input from drifting below the fold regardless of how many sessions, documents, or messages exist.
+- **Critical fix from current build:** the chat input currently sits far too low on the page and users have to scroll or hunt for it. Fix this by making the center column a flex container where the message area is `flex: 1; overflow-y: auto;` and the timeline + input are non-shrinking (`flex-shrink: 0`) elements pinned directly beneath it — the input must be immediately visible and close to the conversation at all times, exactly as shown in the reference image, never requiring the page to scroll to reach it.
+- The center column's chat input is **not** `position: fixed` to the browser window (that breaks at different zoom levels/screen sizes) — the flex approach above keeps it "sticky" relative to its own column at any zoom level, including 80–90%.
+- Verify at 80%, 90%, and 100% browser zoom that all three columns remain visible without horizontal scrolling and the chat input never requires scrolling the whole page to reach.
 
-```
-backend/app/
-├── api/v1/endpoints/documents.py       # unchanged interface; calls rag_service instead of gemini_service
-├── api/v1/endpoints/workspaces.py      # unchanged
-├── core/config.py                      # + GROQ_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME
-├── core/database.py                    # unchanged
-├── graph/
-│   ├── __init__.py
-│   ├── state.py                        # NEW - shared LangGraph state schema
-│   ├── nodes.py                        # NEW - retrieve_node, generate_node, synthesize_node, insights_node
-│   └── workflow.py                     # NEW - builds and compiles the StateGraph
-├── models/db_models.py                 # unchanged
-├── models/schemas.py                   # unchanged unless noted above
-├── services/document_processor.py      # unchanged
-├── services/pinecone_store.py          # NEW - replaces vector_store.py
-├── services/groq_client.py             # NEW - replaces llm_generator.py
-├── services/insights_extractor.py      # MODIFIED - calls groq_client instead of Gemini
-├── services/rag_service.py             # NEW - replaces gemini_service.py, invokes the compiled graph
-├── services/vector_store.py            # DELETE after pinecone_store.py is verified working
-├── services/gemini_service.py          # DELETE after rag_service.py is verified working
-└── services/llm_generator.py           # DELETE after groq_client.py is verified working
-```
+### B3. Left Sidebar — Sessions + Documents
 
-## Step-by-step instructions
+**Sessions block**
+- Header row: `SESSIONS` label (small caps, muted) + `+ New Session` button (existing button styling), right-aligned. Clicking creates a new session and makes it active.
+- Session list: each row shows session name, with the **active session visually highlighted** (existing active/selected state styling — background tint + accent border/text, matching current purple accent usage). Clicking a row switches the active session.
+- Each session row has a kebab/three-dot menu (as in the reference image) triggering **`Rename`** (inline edit or modal — updates the session name in place) and **`Delete`** (removes that specific session) actions, using the existing dropdown/menu component styling.
+- Below the list: a `Delete Session` button styled with the existing destructive/red treatment, acting on the currently active session — matches the reference image exactly.
+- List scrolls independently once it exceeds available vertical space; sidebar itself does not grow the page.
 
-### 1. Dependencies
+**Documents block**
+- Header: `DOCUMENTS` label.
+- Compact drag-and-drop upload zone (reuse the existing upload component's visuals, just resize/reposition to fit the narrower sidebar):
+  - Upload/cloud icon
+  - "Drag & drop files here"
+  - "or click to browse" (as a clickable sub-action, existing link/accent color)
+  - "Supported formats: PDF, DOCX, XLSX, PPTX, PNG/JPG, TXT, MD" — keep this label accurate to what A2/A5 actually support once shipped.
+- Document list below the upload zone: each item shows a **file-type icon/logo matching its format** (PDF, DOCX, XLSX, PPTX, image), filename (truncate with ellipsis + tooltip/title attr for full name), type + size on a secondary line, and a kebab menu with `Rename` / `Delete`.
+- **Do not** show a separate progress/pipeline block per individual document in this list — per-document status can be a small inline badge (e.g., "completed", "processing", "failed") next to the filename, not a full 4-stage pipeline (that lives once, centrally, above the chat input — see B5).
+- `View all documents →` link at the bottom **only if** the list is long enough to need pagination/expansion within the same sidebar (opens the list to show all vs. a capped preview) — this must not navigate to a separate "Document Library" page/route, since that concept is being removed.
+- Entire Documents block scrolls independently within the left sidebar if sessions + documents together exceed the sidebar's height; give Sessions a max-height with its own scroll and Documents its own scroll beneath it, so a long session list doesn't push documents fully out of view.
 
-In `backend/requirements.txt`:
-- Remove: `google-generativeai`, `chromadb` (and any Chroma-only transitive deps not needed elsewhere)
-- Add: `langgraph`, `langchain-groq`, `groq`, `pinecone`
+### B4. Center Column — Conversation
 
-### 2. Environment / config
+**Header (compact, fixed height, does not scroll):**
+- Left: small "AI ASSISTANT" eyebrow label + existing AI/sparkle icon + "Conversation" title (existing heading typography).
+- Right: "Active session: {session name}" in the existing accent color.
 
-In `app/core/config.py`, add to the `Settings` class:
-```python
-GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
-PINECONE_API_KEY: str = os.getenv("PINECONE_API_KEY", "")
-PINECONE_INDEX_NAME: str = os.getenv("PINECONE_INDEX_NAME", "docmind-index")
-```
-Keep the existing `.env` discovery logic as-is. Do not remove `GEMINI_API_KEY` from `.env.example` yet — leave a comment marking it deprecated, in case of rollback.
+**Message thread (scrolls independently, flex: 1):**
+- AI messages: left-aligned, existing AI avatar/icon, existing dark bubble/card styling, support markdown rendering (paragraphs, bullet/numbered lists, bold, links). If markdown rendering isn't already implemented for AI responses, add it (e.g., `react-markdown` or existing equivalent) — the reference image's AI messages show structured bullet content, so this must render as real formatted lists, not plain-text bullets.
+- User messages: right-aligned, existing user/profile icon, existing rounded bubble styling, visually distinct from AI bubbles (already differentiated by alignment + icon — keep as-is).
+- Auto-scroll to latest message on new message arrival, but preserve manual scroll position if the user has scrolled up to read history (don't yank them back down mid-read).
+- Long AI responses use the "See details ↓" expandable pattern shown in the reference image — collapsed-by-default long answers with an expand toggle.
 
-### 3. `app/services/pinecone_store.py` (replaces `vector_store.py`)
+### B5. Processing Status — a real animated timeline, above the input
 
-Preserve the exact same public interface as the current `vector_store` singleton so `documents.py` doesn't need changes beyond the import:
-- `add_document_chunks(workspace_id: str, doc_id: str, filename: str, chunks: list[str]) -> None`
-- `query(workspace_id: str, query_text: str, top_k: int = 6, doc_ids: list[str] | None = None) -> dict` — must return a dict with `documents` and `metadatas` keys in the same shape currently consumed in `documents.py` (`workspace_query`), including per-chunk `filename` and `page` in metadata.
-- `delete_document_chunks(doc_id: str) -> None`
+This must feel like a genuine, polished timeline experience, not a static row of icons — reuse existing visual tokens only, but bring the interaction to life:
 
-Implementation notes:
-- Initialize the Pinecone client using `settings.PINECONE_API_KEY`.
-- Use `settings.PINECONE_INDEX_NAME`; create the index on startup if it doesn't exist (serverless spec, cosine metric, dimension matching whatever embedding model is chosen).
-- Use workspace_id as a metadata filter (or namespace) so queries stay scoped per workspace, matching current Chroma behavior.
-- Pick and document an embedding model/provider for turning chunks into vectors (this wasn't specified — use a reasonable default and call it out clearly in code comments so it's easy to swap later).
+- One workspace-level horizontal status bar (not per-document), positioned directly above the chat input, below the message thread.
+- Left label: small "Processing Status" text + existing status/wave icon.
+- Stages rendered as a horizontal row of icon nodes connected by a connecting line, matching the reference image exactly: `Upload Complete → Extraction → Embedding → Analysis → Ready`.
+- Visual states (reuse existing purple accent tokens — no new colors):
+  - **Completed stage:** filled purple circle with checkmark/existing "done" icon; the connecting line leading into it fills solid in accent color.
+  - **Current/active stage:** purple circle with the existing sparkle/spinner icon, animated/glowing (reuse existing glow/pulse CSS already defined elsewhere in the app; do not invent a new animation style).
+  - **Future/pending stage:** grey/muted circle, muted label, dashed/light connecting line.
+- As a document actually advances through the pipeline (driven by the same status source fixed in A1), the timeline should visibly progress in real time — the connecting line fills in and the active node's glow moves forward stage by stage, so the user perceives real progress rather than a flat status label.
+- When nothing is actively processing, collapse to a slim "All documents ready" summary line, or show the last-completed state — pick whichever best matches the compact, non-intrusive feel in the reference image.
+- Must remain a single fixed-height row — never expand into a tall block, and never duplicate per uploaded document.
 
-### 4. `app/services/groq_client.py` (replaces `llm_generator.py`)
+### B6. Chat Input — brought up, sticky, single attachment control
 
-Keep the same public surface as `llm_generator`:
-- `detect_query_intent(query: str) -> str` — keep this logic as-is, it's provider-agnostic.
-- `generate_answer(query: str, snippets: list[str]) -> str`
-- Keep `_local_fallback_answer` as-is for when the Groq call fails or `GROQ_API_KEY` is missing — same silent-fallback behavior, but keep the `[DEBUG]`/`[WARNING]`/`[ERROR]` print statements so failures stay diagnosable in logs.
+- **This is a priority fix:** in the current build the input sits too far down the page. It must sit immediately below the Processing Status timeline, always visible without any scrolling, exactly as positioned in the reference image.
+- Large rounded input (reuse existing input styling), placeholder "Type your message...".
+- Exactly one attachment/paperclip icon inside the input, **on the left side** — this is a convenience shortcut only; it routes uploaded files through the same upload pipeline as the sidebar's Documents uploader, tagged to the active session. Do not add a second/duplicate upload widget in the center column.
+- Send icon **on the right side** of the input (existing icon + accent color) — sends the query.
+- Input is the fixed-height, non-shrinking last element of the center column's flex layout (see B2) — always visible without scrolling the page, regardless of message count, document count, or session count.
 
-Implementation notes:
-- Use the `groq` Python SDK or `langchain-groq`'s `ChatGroq` — pick one and be consistent with what `app/graph/nodes.py` uses.
-- Use a current Groq-hosted model (e.g. `llama-3.3-70b-versatile`) — don't hardcode a model id without checking it's still active on Groq's model list.
-- Preserve the three `length_instruction` variants (short / detailed / standard) from the current prompt logic.
+### B7. Right Sidebar — Session Insights
 
-### 5. `app/services/insights_extractor.py` (modified in place)
+- Header: chart/insights icon + "Session Insights" title.
+- **Executive Summary card:** existing dark card styling, supports multiple bullet points and can scroll internally if content is long (`max-height` + `overflow-y: auto` on the card itself, not the whole sidebar) so one very long summary doesn't push Top Keywords off-screen.
+- **Top Keywords section:** header "TOP KEYWORDS" + existing rounded pill/tag styling, wrapped in a flex-wrap row, auto-generated from session/document/conversation content.
+- Sidebar scrolls independently if both cards together exceed available height.
+- Remove the current "Workspace Document Library" block from this sidebar entirely (per B0) — replace that vertical space with the Top Keywords section per the reference layout.
 
-Swap whatever Gemini calls exist here for `groq_client` calls, keeping the existing return shape (`summary`, `keywords`, `timeline`, `entities`) that `documents.py`'s `process_document_background` already expects.
+### B8. Responsive behavior
 
-### 6. `app/graph/state.py` (new)
+- **Large desktop (primary target, ~1280px+):** full three-column layout as described, center column gets the remaining width after both sidebars' fixed widths are subtracted.
+- **Medium screens (~960–1280px):** reduce sidebar widths proportionally (e.g., left ~240px, right ~280px) before considering collapse; keep all three columns visible as long as reasonably possible.
+- **Small/narrow screens (<960px):** collapse left and right sidebars into slide-over drawers, triggered by two icon buttons in the center header (a "sessions/documents" icon on the left of the header, an "insights" icon on the right) — center conversation remains the only always-visible column. Drawers overlay on top of the center column (existing dark/glass panel styling) rather than squeezing it unusably narrow.
+- Explicitly verify no layout breakage at 80% and 90% zoom on a standard 1440px and 1920px display.
 
-Define a `TypedDict` (or Pydantic model) representing the shared graph state, at minimum:
-```python
-class RAGState(TypedDict):
-    query: str
-    workspace_id: str
-    doc_ids: list[str] | None
-    snippets: list[str]
-    metadatas: list[dict]
-    answer: str
-```
-Add a separate state type for the ingestion/insights flow if it doesn't share enough fields with the query flow to reuse one state.
+### B9. Non-negotiable acceptance criteria
 
-### 7. `app/graph/nodes.py` (new)
-
-Implement as plain functions taking and returning `RAGState`:
-- `retrieve_node(state)` — calls `pinecone_store.query(...)`, populates `snippets`/`metadatas`.
-- `generate_node(state)` — calls `groq_client.generate_answer(...)`, populates `answer`.
-- `synthesize_node(state)` — final formatting pass on `answer` if needed (can be a no-op pass-through initially).
-- `insights_node(state)` — used by the ingestion graph, wraps `insights_extractor`.
-
-### 8. `app/graph/workflow.py` (new)
-
-Build two compiled graphs (or one graph with conditional entry points):
-- A **query graph**: `retrieve_node → generate_node → synthesize_node`.
-- An **ingestion graph**: chunking/embedding (via `pinecone_store`) → `insights_node`.
-
-Export compiled graph instances that `rag_service.py` can invoke directly, e.g. `query_graph`, `ingestion_graph`.
-
-### 9. `app/services/rag_service.py` (replaces `gemini_service.py`)
-
-Same public interface as `gemini_service`:
-```python
-class RAGService:
-    @staticmethod
-    def generate_document_insights(full_text: str) -> dict: ...
-    @staticmethod
-    def generate_query_answer(query: str, snippets: list[str]) -> str: ...
-
-rag_service = RAGService()
-```
-Internally these should invoke the compiled LangGraph graphs from `app/graph/workflow.py` rather than calling services directly, so the graph is the single orchestration point.
-
-### 10. `app/api/v1/endpoints/documents.py`
-
-Update the single import line:
-```python
-from app.services.rag_service import rag_service
-```
-Replace all `gemini_service.` calls with `rag_service.` — same method names, no other changes needed in this file.
-
-### 11. Cleanup
-
-Once the new services are verified working end-to-end (upload → insights populate, query → Groq-generated answer, Pinecone dashboard shows the index populated):
-- Delete `vector_store.py`, `gemini_service.py`, `llm_generator.py`.
-- Delete `backend/storage/chroma_db/` (no longer used).
-- Remove `google-generativeai` and `chromadb` fully from `requirements.txt` if not already done in step 1.
-
-## Verification checklist
-
-- [ ] `pip install -r requirements.txt` succeeds with the new dependency set.
-- [ ] Uploading a document creates vectors in the Pinecone index (check Pinecone console) instead of `storage/chroma_db/`.
-- [ ] Document insights (summary/keywords/timeline/entities) are populated after upload, generated via Groq.
-- [ ] `/query` returns an answer generated by Groq (verify via Groq's usage dashboard, not just app behavior).
-- [ ] Local fallback still works if `GROQ_API_KEY` is unset (test by temporarily removing it).
-- [ ] No remaining imports of `google.generativeai`, `chromadb`, or the deleted service files anywhere in the codebase.
-
-## Additional task: make the frontend fully responsive
-
-Independent of the backend migration above, audit and fix responsiveness across the whole Next.js frontend (`frontend/src/app/` and `frontend/src/components/`). Do not change the existing glassmorphic visual style, colors, or the background video — only fix layout/sizing behavior across breakpoints.
-
-Pages/components in scope:
-- `app/page.tsx` (landing)
-- `app/about/page.tsx`
-- `app/pricing/page.tsx`
-- `app/product/page.tsx`
-- `app/workspace/[workspaceId]/page.tsx` (highest priority — has the most complex layout: session list, chat panel, insights/keywords panel, document library)
-- `components/Background/BackgroundVideo.tsx`
-- `components/landing/CtaFooter.tsx`
-
-Requirements:
-- No horizontal scrolling or clipped content at common breakpoints: mobile (~375px), tablet (~768px), laptop (~1280px), and wide desktop (~1920px).
-- On the workspace page specifically: the multi-column layout (sessions / chat / insights) should collapse gracefully on narrower screens (e.g. stacked or tab/drawer-based) rather than squeezing columns unreadably thin.
-- Glass containers keep their existing thin white edge styling at every breakpoint — don't lose it when switching to stacked/mobile layouts.
-- Text, buttons, and form inputs stay legible and tappable (minimum ~44px touch target) on mobile.
-- The background video continues playing behind content at all viewport sizes without being cropped in a way that hides key visual elements.
-- Use Tailwind's responsive utility classes (`sm:`, `md:`, `lg:`, `xl:`) consistently rather than fixed pixel widths, unless a fixed width is intentional (e.g. a max-width container).
-
-Verification:
-- [ ] Manually resize the browser (or use device emulation) across the breakpoints above on every page listed and confirm no overflow, overlap, or clipped content.
-- [ ] Workspace page's three-panel layout is usable on mobile without horizontal scrolling.
-- [ ] Existing glassmorphic style (blur, white edges, background video) is unchanged, just responsive.
+- [ ] No page-level vertical scrollbar appears in the workspace route at any zoom level tested — only the three internal panes scroll.
+- [ ] Chat input is visible without scrolling immediately on workspace load, positioned directly beneath the Processing Status timeline (not far down the page), and remains visible after adding many sessions, many documents, and a long conversation.
+- [ ] Processing Status renders as a genuine progressing timeline (filling connector lines, glowing active node) driven by real backend status — not a static row.
+- [ ] Only one processing-status component exists per workspace (not one per document).
+- [ ] Only one attachment control exists in the center column (the input's paperclip, left side); primary upload UX lives in the left sidebar. Send control is on the right side of the input.
+- [ ] Sessions support full create / rename (via kebab menu) / delete (via kebab menu, and via the dedicated `Delete Session` button for the active session) lifecycle.
+- [ ] The standalone "Workspace Document Library" panel/route is fully removed; all document actions (upload, rename, delete, view all) are reachable from the left sidebar only.
+- [ ] Zero changes to color values, fonts, icon set, border-radius, or the background video — a visual diff against the current build should show only positional/sizing changes, not restyled components.
+- [ ] Background video remains visible in the margins around the three-column workspace container on large screens.
+- [ ] Session management (create/switch/rename/delete, active-session highlight) and document management (upload/drag-drop/rename/delete/status) both remain fully functional after the layout change.
+- [ ] Any combination of PDF, DOCX, XLSX, PPTX, and image documents attached to one session can be queried together, individually by filename, or in combination, with grounded answers.
