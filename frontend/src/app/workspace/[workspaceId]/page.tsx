@@ -553,7 +553,7 @@ export default function WorkspacePage() {
 
       <main className={`
         ${activeTab === 'chat' ? 'flex' : 'hidden'}
-        lg:flex lg:flex-[5] flex-col border-r border-white/10 h-full overflow-hidden
+        lg:flex lg:flex-[6] flex-col border-r border-white/10 h-full overflow-hidden
       `}>
         <header className="px-6 py-4 border-b border-white/10 flex items-center justify-between flex-shrink-0">
           <div className="flex items-center gap-3">
@@ -599,7 +599,7 @@ export default function WorkspacePage() {
           </div>
         </div>
 
-        <div className="p-4 md:p-6 border-t border-white/10 bg-black/20 backdrop-blur-md flex-shrink-0">
+        <div className="p-4 md:p-6 border-t border-white/10 bg-black/20 backdrop-blur-md flex-shrink-0 mt-auto">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
             <input
               type="text"

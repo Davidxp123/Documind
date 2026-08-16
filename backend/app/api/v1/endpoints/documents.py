@@ -14,19 +14,24 @@ from app.services.rag_service import rag_service
 router = APIRouter()
 
 async def process_document_background(doc_id: str, file_path: str, file_type: str, workspace_id: str, filename: str):
+    print(f"[INFO] Starting background processing for {filename} ({doc_id})")
     async for db in get_db():
         doc = await db.get(Document, doc_id)
         if not doc:
+            print(f"[ERROR] Document {doc_id} not found in DB")
             return
         
         doc.status = "processing"
         await db.commit()
         
         try:
+            print(f"[INFO] Extracting text for {filename}")
             pages, chunks = DocumentProcessor.extract_text_and_chunks(file_path, file_type)
+            print(f"[INFO] Adding to vector store for {filename}")
             vector_store.add_document_chunks(workspace_id, doc_id, filename, chunks)
             
             full_text = "\n".join([p["text"] for p in pages])
+            print(f"[INFO] Generating insights for {filename}")
             insights = rag_service.generate_document_insights(full_text)
             
             doc.status = "completed"
@@ -36,7 +41,9 @@ async def process_document_background(doc_id: str, file_path: str, file_type: st
             doc.timeline = insights.get("timeline")
             doc.entities = insights.get("entities")
             await db.commit()
+            print(f"[INFO] Processing completed for {filename}")
         except Exception as e:
+            print(f"[ERROR] Processing failed for {filename}: {str(e)}")
             doc.status = f"failed: {str(e)}"
             await db.commit()
         break
@@ -105,8 +112,12 @@ async def upload_document(
 
 @router.get("/workspace/{workspace_id}", response_model=list[DocumentResponse])
 async def list_workspace_documents(workspace_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
-    return result.scalars().all()
+    try:
+        result = await db.execute(select(Document).where(Document.workspace_id == workspace_id))
+        return result.scalars().all()
+    except Exception as e:
+        print(f"[ERROR] list_workspace_documents failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.patch("/{doc_id}/session", response_model=DocumentResponse)
 async def assign_document_session(doc_id: str, payload: SessionAssignRequest, db: AsyncSession = Depends(get_db)):
@@ -216,10 +227,18 @@ async def delete_document(doc_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/session/{session_id}/messages", response_model=list[ChatMessageResponse])
 async def list_session_messages(session_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()))
-    return result.scalars().all()
+    try:
+        result = await db.execute(select(ChatMessage).where(ChatMessage.session_id == session_id).order_by(ChatMessage.timestamp.asc()))
+        return result.scalars().all()
+    except Exception as e:
+        print(f"[ERROR] list_session_messages failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/session/{session_id}/documents", response_model=list[DocumentResponse])
 async def list_session_documents(session_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Document).where(Document.session_id == session_id))
-    return result.scalars().all()
+    try:
+        result = await db.execute(select(Document).where(Document.session_id == session_id))
+        return result.scalars().all()
+    except Exception as e:
+        print(f"[ERROR] list_session_documents failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

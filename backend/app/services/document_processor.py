@@ -47,8 +47,13 @@ class DocumentProcessor:
                     pages_content.append({"page": 1, "text": f"Sheet: {sheet_name}\n{df.to_markdown()}"})
             
         elif ext in ["png", "jpg", "jpeg"]:
-            text = pytesseract.image_to_string(Image.open(file_path))
-            pages_content.append({"page": 1, "text": text})
+            try:
+                img = Image.open(file_path)
+                text = pytesseract.image_to_string(img)
+                pages_content.append({"page": 1, "text": text})
+            except Exception as e:
+                print(f"[ERROR] Image processing failed: {e}")
+                pages_content.append({"page": 1, "text": f"Error processing image: {str(e)}"})
             
         elif ext in ["pptx"]:
             prs = Presentation(file_path)
