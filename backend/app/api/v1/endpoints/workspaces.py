@@ -1,10 +1,10 @@
 import uuid
 import os
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.models.db_models import Workspace, Session, Document
+from app.models.db_models import Workspace, Session, Document, ChatMessage
 from app.models.schemas import WorkspaceCreate, WorkspaceResponse, SessionCreate, SessionResponse
 from app.services.pinecone_store import pinecone_store as vector_store
 
@@ -58,22 +58,46 @@ async def update_workspace_session(workspace_id: str, session_id: str, payload: 
 async def delete_workspace_session(workspace_id: str, session_id: str, db: AsyncSession = Depends(get_db)):
     session = await db.get(Session, session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
+        # Check by ID query across sessions as fallback
+        q = await db.execute(select(Session).where(Session.id == session_id))
+        session = q.scalar_one_or_none()
+        
+    if not session:
+        # Return success/not-found friendly message
+        return {"message": "Session not found or already deleted"}
 
-    result = await db.execute(select(Document).where(Document.session_id == session_id))
-    documents = result.scalars().all()
-    for doc in documents:
-        try:
-            vector_store.delete_document_chunks(doc.id)
-        except Exception:
-            pass
-        try:
-            if doc.file_path and os.path.exists(doc.file_path):
-                os.remove(doc.file_path)
-        except Exception:
-            pass
-        await db.delete(doc)
+    # 1. Cascade delete ChatMessages for this session
+    try:
+        await db.execute(delete(ChatMessage).where(ChatMessage.session_id == session_id))
+    except Exception as e:
+        print(f"[WARN] Error deleting chat messages for session {session_id}: {e}")
 
-    await db.delete(session)
-    await db.commit()
+    # 2. Clean up associated documents
+    try:
+        result = await db.execute(select(Document).where(Document.session_id == session_id))
+        documents = result.scalars().all()
+        for doc in documents:
+            try:
+                vector_store.delete_document_chunks(doc.id)
+            except Exception:
+                pass
+            try:
+                if doc.file_path and os.path.exists(doc.file_path):
+                    os.remove(doc.file_path)
+            except Exception:
+                pass
+            await db.delete(doc)
+    except Exception as e:
+        print(f"[WARN] Error deleting session documents: {e}")
+
+    # 3. Delete the session
+    try:
+        await db.delete(session)
+        await db.commit()
+    except Exception as e:
+        await db.rollback()
+        print(f"[ERROR] Failed to delete session: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
+
     return {"message": "Session deleted"}
+

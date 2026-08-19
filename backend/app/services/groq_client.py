@@ -60,7 +60,7 @@ class GroqClient:
             return f"Based on the document context: {ans}"
 
         elif intent == "detailed":
-            intro = f"Here is a comprehensive breakdown based on the document passages regarding '{query}':\n"
+            intro = f"Here is a comprehensive breakdown based on the document passages regarding '{query}':\n\n"
             bullet_points = []
             seen = set()
             for sent in top_sentences[:6]:
@@ -78,47 +78,47 @@ class GroqClient:
 
     def generate_answer(self, query: str, snippets: list[str]) -> str:
         if not snippets:
-            return "No relevant content was found in this workspace. Please upload documents and try again."
+            return "No relevant content was found in the uploaded documents. Please ensure documents are uploaded and processed."
 
         intent = self.detect_query_intent(query)
         
         if self.client:
             try:
-                print(f"[DEBUG] Groq API Key loaded: {self.api_key[:8]}...")
-                
                 if intent == "short":
-                    length_instruction = "Deliver a concise, direct, 1-2 sentence answer (20-40 words)."
+                    length_instruction = "Deliver a concise, direct answer (2-3 sentences or compact bullets)."
                 elif intent == "detailed":
-                    length_instruction = "Deliver a thorough, comprehensive, structured, and detailed response with clear bullet points or headers."
+                    length_instruction = "Deliver a thorough, comprehensive, structured response with clear Markdown bullet points, bold highlights, and headers."
                 else:
-                    length_instruction = "Deliver a balanced, high-quality, professional answer (60-100 words)."
+                    length_instruction = "Deliver a clear, professional, well-structured answer using Markdown bullets or paragraphs (60-120 words)."
 
-                prompt = f"""
-You are DocuMind AI, an expert research assistant.
-Use the following document passages to accurately answer the user's query.
+                passages_text = "\n\n".join(snippets[:8])
+                system_prompt = f"""You are DocuMind AI, an enterprise-grade document intelligence assistant.
+Your job is to answer user inquiries strictly grounded in the provided document passages across all file formats (PDF, DOCX, XLSX spreadsheets, PPTX presentations, and Image attachments).
 
-FORMAT INSTRUCTION: {length_instruction}
+Guidelines:
+1. Ground your response directly in the provided passages. Cite relevant document names or page/sheet/slide numbers where helpful.
+2. If the user mentions a specific file (e.g. 'agile.png', 'Banco.pdf', 'Requirements.xlsx'), focus your answer on the content extracted from that file.
+3. If combining information from multiple documents (e.g. numbers from a spreadsheet and context from a PDF), present a cohesive, synthesised answer.
+4. If the provided passages do not contain the answer, state what related information is available from the documents and clearly state what is missing without guessing.
+5. Format your output with clean Markdown formatting (bullet points, bold text).
 
-User Query:
-{query}
+Format requirement: {length_instruction}"""
 
-Retrieved Document Passages:
-{chr(10).join(snippets[:6])}
-"""
-                print("[DEBUG] Sending request to Groq API...")
                 chat_completion = self.client.chat.completions.create(
                     messages=[
                         {
+                            "role": "system",
+                            "content": system_prompt
+                        },
+                        {
                             "role": "user",
-                            "content": prompt,
+                            "content": f"User Query: {query}\n\nDocument Passages:\n{passages_text}"
                         }
                     ],
                     model=self.model,
                 )
                 ans = chat_completion.choices[0].message.content.strip()
-                
                 if ans:
-                    print("[SUCCESS] Answer received from Groq API!")
                     return ans
                     
             except Exception as e:
@@ -130,3 +130,4 @@ Retrieved Document Passages:
         return self._local_fallback_answer(query, snippets, intent)
 
 groq_client = GroqClient()
+

@@ -3,9 +3,16 @@
 import Link from 'next/link';
 import { useState } from 'react';
 import { Menu, X } from 'lucide-react';
+import { usePathname } from 'next/navigation';
 
 export default function Navbar() {
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Do not show marketing navbar on workspace routes to match Updated-UI.png bounded panel design
+  if (pathname?.startsWith('/workspace')) {
+    return null;
+  }
 
   return (
     <header className="relative z-40 py-4 bg-transparent">
@@ -80,3 +87,4 @@ export default function Navbar() {
     </header>
   );
 }
+
