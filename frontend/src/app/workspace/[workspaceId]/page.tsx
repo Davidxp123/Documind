@@ -64,13 +64,21 @@ export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<'sessions' | 'chat' | 'insights'>('chat');
   const [activeMenuSessionId, setActiveMenuSessionId] = useState<string | null>(null);
   const [activeMenuDocId, setActiveMenuDocId] = useState<string | null>(null);
+  // Fix 3: kebab dropdown position (fixed coords anchored to button via getBoundingClientRect)
+  const [sessionMenuPos, setSessionMenuPos] = useState<{ top: number; right: number } | null>(null);
+  const [docMenuPos, setDocMenuPos] = useState<{ top: number; right: number } | null>(null);
   const [expandedMessages, setExpandedMessages] = useState<Record<number, boolean>>({});
   const [processingStage, setProcessingStage] = useState<number>(5); // 1: Upload Complete, 2: Extraction, 3: Embedding, 4: Analysis, 5: Ready
   const [isProcessing, setIsProcessing] = useState(false);
   const [showAllDocs, setShowAllDocs] = useState(false);
+  // Fix 4: auto-scroll — track whether user has scrolled up intentionally
+  const [userScrolledUp, setUserScrolledUp] = useState(false);
+  const [hasNewMessage, setHasNewMessage] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
+  const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
 
   const currentSession: SessionState = sessions.find((session) => session.id === currentSessionId) ?? {
     id: currentSessionId || 'default',
@@ -80,10 +88,35 @@ export default function WorkspacePage() {
   };
   const currentMessages = currentSession.messages;
 
-  // Auto-scroll to bottom of messages
+  // Fix 4: Auto-scroll to bottom whenever messages change, but only if user is near bottom
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [currentMessages]);
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    if (!userScrolledUp) {
+      container.scrollTop = container.scrollHeight;
+      setHasNewMessage(false);
+    } else {
+      setHasNewMessage(true);
+    }
+  }, [currentMessages, userScrolledUp]);
+
+  const handleMessagesScroll = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    const distFromBottom = container.scrollHeight - container.scrollTop - container.clientHeight;
+    setUserScrolledUp(distFromBottom > 100);
+    if (distFromBottom <= 100) setHasNewMessage(false);
+  };
+
+  const scrollToBottom = () => {
+    const container = messagesContainerRef.current;
+    if (!container) return;
+    container.scrollTop = container.scrollHeight;
+    setUserScrolledUp(false);
+    setHasNewMessage(false);
+  };
+
+
 
   const updateSessionMessages = (newMessages: { role: 'user' | 'assistant'; text: string }[]) => {
     setSessions((prev) =>
@@ -272,11 +305,15 @@ export default function WorkspacePage() {
     const handleGlobalClick = () => {
       setActiveMenuSessionId(null);
       setActiveMenuDocId(null);
+      setSessionMenuPos(null);
+      setDocMenuPos(null);
     };
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setActiveMenuSessionId(null);
         setActiveMenuDocId(null);
+        setSessionMenuPos(null);
+        setDocMenuPos(null);
       }
     };
     window.addEventListener('click', handleGlobalClick);
@@ -316,12 +353,9 @@ export default function WorkspacePage() {
               setIsProcessing(false);
               setProcessingStage(5); // Ready
 
-              if (doc.status === 'completed') {
-                appendSessionMessage({
-                  role: 'assistant',
-                  text: `Document **${doc.filename}** has finished processing and is ready for queries.`,
-                });
-              } else if (doc.status.startsWith('failed')) {
+              // Fix 2: Do NOT inject any message into the chat thread.
+              // Processing status is communicated solely via the Processing Status timeline bar.
+              if (doc.status.startsWith('failed')) {
                 setError(`Document processing failed: ${doc.status}`);
               }
             }
@@ -727,41 +761,30 @@ export default function WorkspacePage() {
                   >
                     <span className="truncate pr-2">{session.name}</span>
 
-                    {/* Kebab menu trigger */}
-                    <div className="relative flex-shrink-0">
+                    {/* Kebab menu trigger — Fix 3: fixed position via getBoundingClientRect */}
+                    <div className="flex-shrink-0">
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          setActiveMenuSessionId(
-                            activeMenuSessionId === session.id ? null : session.id
-                          );
+                          if (activeMenuSessionId === session.id) {
+                            setActiveMenuSessionId(null);
+                            setSessionMenuPos(null);
+                          } else {
+                            const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                            setSessionMenuPos({
+                              top: rect.bottom + 4,
+                              right: window.innerWidth - rect.right,
+                            });
+                            setActiveMenuSessionId(session.id);
+                            setActiveMenuDocId(null);
+                            setDocMenuPos(null);
+                          }
                         }}
                         className="p-1 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-all"
                         title="Session options"
                       >
                         <MoreVertical className="w-3.5 h-3.5" />
                       </button>
-
-                      {/* Dropdown Menu - direct 2-item compact popover, no scrolling */}
-                      {activeMenuSessionId === session.id && (
-                        <div
-                          className="absolute right-0 top-full mt-1 z-50 w-32 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            onClick={() => renameSession(session.id)}
-                            className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
-                          </button>
-                          <button
-                            onClick={() => deleteSession(session.id)}
-                            className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
-                          </button>
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
@@ -838,46 +861,30 @@ export default function WorkspacePage() {
                     </div>
                   </div>
 
-                  {/* Kebab menu */}
-                  <div className="relative flex-shrink-0 ml-1">
+                  {/* Kebab menu — Fix 3: fixed position via getBoundingClientRect */}
+                  <div className="flex-shrink-0 ml-1">
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        setActiveMenuDocId(activeMenuDocId === doc.id ? null : doc.id);
+                        if (activeMenuDocId === doc.id) {
+                          setActiveMenuDocId(null);
+                          setDocMenuPos(null);
+                        } else {
+                          const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
+                          setDocMenuPos({
+                            top: rect.bottom + 4,
+                            right: window.innerWidth - rect.right,
+                          });
+                          setActiveMenuDocId(doc.id);
+                          setActiveMenuSessionId(null);
+                          setSessionMenuPos(null);
+                        }
                       }}
                       className="p-1 rounded-md text-white/40 hover:text-white hover:bg-white/10 transition-all"
                       title="Document options"
                     >
                       <MoreVertical className="w-3.5 h-3.5" />
                     </button>
-
-                    {activeMenuDocId === doc.id && (
-                      <div
-                        className="absolute right-0 top-full mt-1 z-50 w-32 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          onClick={() => handleRenameDocument(doc.id, doc.filename)}
-                          className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
-                        >
-                          <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
-                        </button>
-                        {doc.status.startsWith('failed') && (
-                          <button
-                            onClick={() => handleRetryDocument(doc.id)}
-                            className="w-full px-3 py-2 text-left text-xs text-purple-400 hover:bg-purple-500/10 hover:text-purple-300 flex items-center gap-2"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5 text-purple-400" /> Retry
-                          </button>
-                        )}
-                        <button
-                          onClick={() => handleDeleteDocument(doc.id)}
-                          className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
-                        >
-                          <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
-                        </button>
-                      </div>
-                    )}
                   </div>
                 </div>
               ))}
@@ -930,12 +937,19 @@ export default function WorkspacePage() {
             </div>
           </header>
 
-          {/* Messages Scroll Area */}
-          <div className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5 min-h-0 select-text">
+
+          {/* Messages Scroll Area — Fix 4: container ref + smart auto-scroll */}
+          <div className="relative flex-1 flex flex-col min-h-0">
+            <div
+              ref={messagesContainerRef}
+              onScroll={handleMessagesScroll}
+              className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5 min-h-0 select-text workspace-scroll"
+            >
             {currentMessages.map((message, index) => {
               const isAssistant = message.role === 'assistant';
               const isExpanded = expandedMessages[index] ?? false;
-              const isLong = message.text.length > 250;
+              // Fix 5: only collapse genuinely long answers (>1200 chars)
+              const isLong = message.text.length > 1200;
 
               return (
                 <div
@@ -961,7 +975,7 @@ export default function WorkspacePage() {
                       <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1.5 prose-li:my-0.5">
                         <ReactMarkdown>
                           {isLong && !isExpanded
-                            ? `${message.text.slice(0, 220)}...`
+                            ? `${message.text.slice(0, 600)}...`
                             : message.text}
                         </ReactMarkdown>
                         {isLong && (
@@ -992,7 +1006,18 @@ export default function WorkspacePage() {
               );
             })}
             <div ref={messagesEndRef} />
-          </div>
+            </div> {/* end scroll container */}
+
+            {/* Fix 4: "new message" jump-to-bottom button when user has scrolled up */}
+            {userScrolledUp && hasNewMessage && (
+              <button
+                onClick={scrollToBottom}
+                className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-purple-500/40 bg-black/70 backdrop-blur-md text-xs text-purple-300 hover:text-white hover:bg-purple-600/30 transition-all shadow-lg"
+              >
+                <span>New message ↓</span>
+              </button>
+            )}
+          </div> {/* end relative wrapper */}
 
           {/* Bottom Container: Processing Status Timeline + Sticky Chat Input */}
           <div className="p-4 md:p-5 border-t border-white/10 bg-black/40 backdrop-blur-md flex-shrink-0 space-y-3">
@@ -1264,6 +1289,61 @@ export default function WorkspacePage() {
           Insights
         </button>
       </div>
+
+      {/* Fix 3: Portal-rendered fixed-position dropdowns — anchored precisely to trigger button coords */}
+      {activeMenuSessionId && sessionMenuPos && (
+        <div
+          className="fixed z-[999] w-36 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
+          style={{ top: sessionMenuPos.top, right: sessionMenuPos.right }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => renameSession(activeMenuSessionId)}
+            className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
+          </button>
+          <button
+            onClick={() => deleteSession(activeMenuSessionId)}
+            className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
+          </button>
+        </div>
+      )}
+
+      {activeMenuDocId && docMenuPos && (() => {
+        const doc = currentSession.docs.find((d) => d.id === activeMenuDocId);
+        if (!doc) return null;
+        return (
+          <div
+            className="fixed z-[999] w-36 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
+            style={{ top: docMenuPos.top, right: docMenuPos.right }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => handleRenameDocument(doc.id, doc.filename)}
+              className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
+            >
+              <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
+            </button>
+            {doc.status.startsWith('failed') && (
+              <button
+                onClick={() => handleRetryDocument(doc.id)}
+                className="w-full px-3 py-2 text-left text-xs text-purple-400 hover:bg-purple-500/10 hover:text-purple-300 flex items-center gap-2"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-purple-400" /> Retry
+              </button>
+            )}
+            <button
+              onClick={() => handleDeleteDocument(doc.id)}
+              className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
+            >
+              <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }

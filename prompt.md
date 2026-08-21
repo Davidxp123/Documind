@@ -1,158 +1,102 @@
-# DocuMind — Production Readiness Pass: Global UI Regressions, Workspace UX Bugs & Per-Format Answer Quality
+# DocuMind — Next Development Cycle: Video Playback, Chat Interface Cleanup & Scroll UX
 
-This is the current, authoritative, single-source spec. Earlier rounds (initial bug fixes + three-column workspace redesign) have been implemented and partially verified — this round fixes **regressions introduced by that work** plus a set of **newly discovered bugs**, and closes out the remaining **per-file-type answer-quality gaps**. Treat this document as complete and self-contained; do not assume anything not stated here is already correct.
+This is the current, authoritative spec for this development cycle. The previous round's fixes are confirmed to have landed correctly for these items — **do not regress them**:
 
-There are three tracks. Implement and test them as separable concerns, but all three must be true simultaneously in the final build:
+- Page scrolling now works correctly on all pages (Home, Product, Pricing, About, Workspace).
+- The dedicated Processing Status timeline (the horizontal stage bar above the chat input) is working correctly — stages progress in sync with real backend status, animate correctly, and land on the completed "Ready" state.
+- Session Insights (Executive Summary + Top Keywords) are populating correctly and are correctly scoped per session.
 
-- **PART A — Global Frontend Regressions** (background animation broken on every page, page scroll locked on every page)
-- **PART B — Workspace Area UX Bugs** (missing header, session kebab menu behavior, processing timeline animation bugs, stale session insights on new session)
-- **PART C — Per-Format Answer Quality** (Excel returns raw data instead of an answer; images give poor answers and broken insights; PDF/DOCX/PPTX already work correctly and must not regress)
-
-**Non-negotiable constraint across all tracks:** do not change colors, typography, icon set, border-radius, component visual styling, or the overall theme. This is a correctness and stability pass, not a redesign — every fix here should make existing intended behavior actually work, not introduce new visual design.
+This cycle fixes the remaining issues below, confirmed by direct testing. Do not change colors, typography, icon set, border-radius, or overall theme/styling anywhere in this pass — every item here is a functional/UX correctness fix, not a visual redesign.
 
 ---
 
-## PART A — GLOBAL FRONTEND REGRESSIONS (affects Home, Product, Pricing, About, and Workspace)
+## 1. Background video animation still does not load/play on any page
 
-These are regressions relative to the previous round — the earlier fix only addressed the video not autoplaying on first load; it has now regressed further: the video does not load/play at all, and page scrolling is now completely locked. Fix both properly, on **every** route, not just the homepage.
-
-### A1. Background animation does not load on any page
-
-**Observed behavior:** On Home, Product, Pricing, About, and inside the Workspace area, the animated background is not loading or playing at all (previously it merely failed to autoplay on first load and would work after a reload — now it does not work at all, on any load).
+**Observed behavior:** Despite the previous fix attempt, the animated background is still not loading or playing on any page — Home, Product, Pricing, About, and Workspace all still show no background animation. Page scroll is now fixed correctly, so the earlier `overflow: hidden` leak has been resolved, but the video itself remains non-functional everywhere.
 
 **Required fixes:**
 
-1. Treat this as a full regression from the previous fix attempt — re-check whatever change was made for the first-load autoplay issue; it likely broke the video element's mount, source, or a shared layout/provider that all routes depend on.
-2. Confirm the video asset itself is being requested successfully (check the network tab for a 200 on the video source on every route) — rule out a broken path, a route-specific asset reference, or an accidentally-removed shared background component.
-3. Confirm the background component is actually present in the DOM on **every** route (Home, Product, Pricing, About, Workspace) — if it lives in a shared layout, verify that layout wraps all of these routes correctly; if each page mounts its own instance, verify none of them were dropped or broken during the workspace layout refactor.
-4. Re-apply the autoplay requirements correctly this time: `muted`, `autoPlay`, and `playsInline` all set together on the `<video>` element, with `.play()` called explicitly in a post-mount effect (handling the returned promise) as a fallback in case the attribute-driven autoplay doesn't trigger.
-5. Do not change the video's visual styling, size, position, opacity, or the asset itself — this is purely a "does it load and play, on every route" fix.
-6. Verify on a genuine first load (cache cleared / incognito) on all five routes individually: Home, Product, Pricing, About, Workspace.
-
-### A2. Page cannot be scrolled to the bottom — on every page, including Workspace
-
-**Observed behavior:** On every route (Home, Product, Pricing, About, and the Workspace area), the page scroll is locked/stuck partway down — the user cannot scroll to the end of the page content. This affects marketing pages (which should scroll normally, full page) as well as the Workspace route (which should have the fixed-viewport, internally-scrolling three-pane behavior specified separately in Part B/B-legacy layout work).
-
-**Required fixes:**
-
-1. This is very likely a global CSS regression — check the root/shared layout (e.g., a top-level `<html>`, `<body>`, or app-shell wrapper) for an `overflow: hidden` or a fixed `height: 100vh` rule that was intended **only** for the Workspace route's fixed-viewport layout but leaked into the global layout and is now clipping/locking scroll on the marketing pages too.
-2. **Home / Product / Pricing / About must scroll normally as full pages** — no height lock, no `overflow: hidden` at the document/body level, content must be reachable all the way to the footer on every one of these routes.
-3. **Workspace route** should keep its intended fixed-viewport behavior (outer shell fixed height, only the three internal panes scroll) — but verify this scoped `overflow: hidden` is applied **only** to the workspace route's own container, not to a shared ancestor (`body`, root layout, global CSS) that other routes also inherit from.
-4. After the fix, explicitly verify: marketing pages scroll fully to their footer with no dead zone, and the Workspace route has zero page-level scroll but all three internal panes (sidebar, conversation, sidebar) scroll independently and correctly.
+1. Treat the previous fix as unsuccessful and re-diagnose from scratch — do not assume the video element, autoplay attributes, or mount timing are correct just because they were addressed before.
+2. First confirm the most basic thing: is the video asset actually being requested and returned successfully at all? Check the network tab / server logs on every route for the video's request — a 404, a broken path, a wrong `public/` asset location, or a build step not copying the asset over are all more likely than a subtle autoplay-timing bug if the video _never_ plays, on _every_ route, even after the previous fix.
+3. Confirm the background video component itself is actually still present and mounted in the DOM on every route — inspect the live DOM on each of the five routes directly; if it is missing entirely (not just failing to play), the issue is that the component isn't being rendered at all, not a playback problem.
+4. If the element is present and the asset loads but it still won't play: verify `muted`, `autoPlay`, and `playsInline` are all set together on the `<video>` tag, and add an explicit `.play()` call in a post-mount effect that handles (catches) the returned promise, retrying on the next user interaction if the browser rejects programmatic playback.
+5. Check for a console error on every route (codec/format issue, CORS on the asset, a conflicting CSS rule like `display: none` or `visibility: hidden` applied to the video container by a more recent style change, or a z-index/stacking issue that hides it behind an opaque background even if it is technically playing).
+6. Do not change the video's visual styling, size, position, opacity, or the asset itself.
+7. Verify on a genuine first load (cache cleared / incognito) on all five routes individually, and report/confirm which of the above was the actual root cause so it doesn't recur in a future pass.
 
 ---
 
-## PART B — WORKSPACE AREA UX BUGS
+## 2. Chat interface shows the processing/status line multiple times when a PDF is uploaded
 
-### B1. DocuMind header is missing inside the Workspace route
-
-**Observed behavior:** When navigating into the Workspace area, the top-level `DocuMind` header/nav bar (wordmark, nav links, Launch button — as present on Home/Product/Pricing/About) is gone entirely.
+**Observed behavior:** When a PDF is uploaded, a "processing" line/message appears multiple times inside the chat message thread itself (not the dedicated Processing Status bar, which is confirmed working correctly). This should not be happening — the chat thread should only ever contain actual conversation messages (user questions and AI answers), never repeated system/status messages about document processing.
 
 **Required fixes:**
 
-1. Restore the shared top header on the Workspace route. If the three-column workspace layout was built as a route that opts out of the shared app layout/header (a common cause when a route defines its own full-height shell), reintroduce the header as a slim fixed-height bar above the three-pane workspace grid, consistent with how it was already scoped in the original layout spec (top bar sits above the three columns, workspace grid takes the remaining height).
-2. Do not let the header's presence break the workspace's fixed-viewport behavior — the header is a fixed-height element at the top of the shell; the workspace grid below it still takes `flex: 1; min-height: 0; overflow: hidden;` with only its three internal panes scrolling.
-3. Verify the header is visually and functionally identical to the one on Home/Product/Pricing/About (same nav links, same styling) — no visual changes, just restoring its presence.
-
-### B2. Session rename via kebab menu shows a scrollable list instead of a direct action menu
-
-**Observed behavior:** Clicking the three-dot (kebab) menu next to a session currently opens something that requires scrolling before the `Rename` option becomes reachable/usable, rather than immediately showing a small dropdown with `Rename` and `Delete` as direct, immediately-clickable options.
-
-**Required fixes:**
-
-1. The kebab menu must open a small, standard dropdown/popover anchored to the three-dot button, containing exactly two direct actions — `Rename` and `Delete` — both immediately visible and clickable with no internal scrolling required.
-2. Remove whatever caused a scrollable container to appear here (likely an oversized menu component, a list-style component reused incorrectly for a 2-item menu, or a popover with an incorrect max-height/overflow rule).
-3. `Rename` should trigger inline editing of the session name (or a minimal modal — whichever the existing design system already uses elsewhere for renaming) directly, in one click, not after scrolling through an intermediate list.
-4. `Delete` should behave as already specified: removes that specific session (and, per the earlier fix, its messages/documents/insights) — confirm this still works correctly after the menu fix.
-5. Verify the dropdown closes on outside click / selecting an action / pressing Escape, consistent with standard menu behavior elsewhere in the app.
-
-### B3. Processing Status timeline animation bugs
-
-**Observed behavior:**
-
-- The second stage, **Extraction**, blinks continuously/constantly regardless of actual processing state — it does not reflect real progress, it just blinks on its own.
-- The other stages do not animate or progress in sequence as a document actually moves through the pipeline.
-- The final stage, **Ready**, does not turn purple (the "completed" accent color) even once processing is genuinely finished — it stays in its non-completed state.
-
-**Required fixes:**
-
-1. **Remove any hardcoded/looping animation** on the Extraction node specifically — its visual state (pending / active-glowing / completed) must be driven entirely by the real backend processing status for the current document(s), the same status source fixed in the earlier polling work, not by a CSS animation that loops independently of actual state.
-2. **Correct stage-to-status mapping:** each of the five stages (`Upload Complete → Extraction → Embedding → Analysis → Ready`) must map to a real, distinct backend processing state. As a document moves through the real pipeline, the frontend timeline must update stage-by-stage in the correct order — each prior stage shown as completed (filled purple, checkmark) and only the current stage shown as active/glowing, with all future stages shown as pending/muted — exactly once per real state transition, not simultaneously, not out of order, and not via a fixed-duration animation that runs regardless of actual backend progress.
-3. **Fix the Ready/completed end state:** once a document's backend status is genuinely `completed`/`ready`, the Ready node must render in the same filled-purple "completed" style as the other completed stages (with its checkmark/done icon) — confirm this final state isn't stuck in a different (e.g., default/grey) style due to a missing case in the stage-state mapping.
-4. Re-verify the "genuine progressing timeline" behavior from the original spec: connecting lines fill in as each stage completes, only one node glows/animates at a time (the current stage), and the whole sequence reflects real backend state — not a static row, and not an uncoordinated animation.
-5. Test with a full real upload end-to-end (not a mocked/instant state) to confirm the timeline visibly progresses stage by stage as the actual document is processed, and lands correctly on a purple "Ready" state at completion.
-
-### B4. New session shows stale Session Insights from the previous session
-
-**Observed behavior:** Creating a new session correctly produces an empty workspace and empty chat thread, but the right-hand **Session Insights** panel (Executive Summary bullets, Top Keywords) still shows the content generated for the _previous_ session instead of clearing to an empty/default state.
-
-**Required fixes:**
-
-1. Session Insights (Executive Summary + Top Keywords) must be scoped strictly to the currently active session's own documents and conversation — when switching to or creating a session with no documents/conversation yet, this panel must show an empty/placeholder state (e.g., "No insights yet — upload a document or start a conversation"), never carry over content from whichever session was previously active.
-2. Check whether Session Insights state is being stored in a global/shared frontend store keyed incorrectly (e.g., not keyed by `sessionId`, or only refetched on document upload rather than on session switch) — fix so that switching the active session always triggers either a refetch scoped to the new session's ID or a clear-to-empty state if the new session has no generated insights yet.
-3. Verify this is correct for all transitions: creating a brand-new session (should show empty), switching between two existing sessions that each already have their own insights (each must show only its own), and switching back and forth repeatedly (no stale bleed-through in either direction).
+1. Identify where this status message is being injected into the chat thread's message list/state — it is likely a status update handler (e.g., polling callback, websocket/event handler) that is incorrectly pushing a new chat message into the conversation on every status change or every poll tick, instead of only updating the dedicated Processing Status bar's state.
+2. Remove document-processing status entirely from the chat message thread. All processing/pipeline status must live exclusively in the dedicated Processing Status bar (per the working timeline component) — the chat thread must never contain system-generated "processing" entries at all, not even a single one.
+3. If a poller or event handler is firing repeatedly (e.g., once per poll interval) and each firing is appending a new message rather than updating one, fix the underlying cause: state updates from the polling/status source must update the Processing Status bar's own state in place, and must be completely decoupled from whatever appends to the chat message array.
+4. Verify with a full real upload: uploading a PDF (and other formats) must never add any message to the chat thread — the chat thread should only ever grow when the user sends a message and when the AI responds to it.
 
 ---
 
-## PART C — PER-FORMAT ANSWER QUALITY
+## 3. Rename dropdown (session kebab menu) is positioned too far below the trigger
 
-Current state across formats, confirmed by direct testing:
-
-| Format       | Chat answers                                                 | Session Insights                                                |
-| ------------ | ------------------------------------------------------------ | --------------------------------------------------------------- |
-| PDF          | Working correctly                                            | Working correctly                                               |
-| Word (DOCX)  | Working correctly                                            | Working correctly                                               |
-| PPTX         | Working correctly, includes slide references                 | Working correctly                                               |
-| Images       | **Not working** — poor/incorrect answers                     | **Not working** — broken                                        |
-| Excel (XLSX) | **Not working** — returns raw data dump instead of an answer | **Not working** — raw data dump instead of synthesized insights |
-
-PDF, DOCX, and PPTX must not regress during this work — use their current correct behavior as the working reference for how retrieval + generation should behave once Excel and images are fixed.
-
-### C1. Excel — answers are raw data dumps, not actual answers
-
-**Observed behavior:** For any query about an uploaded Excel file, the chat response is just the raw underlying data (e.g., dumped rows/cells/values) rather than a synthesized natural-language answer to the actual question asked. The same problem occurs in Session Insights — the Executive Summary for a session containing an Excel file shows raw spreadsheet data instead of summarized bullet points.
+**Observed behavior:** Clicking the three-dot (kebab) menu next to a session opens the `Rename` / `Delete` dropdown, but the dropdown box appears noticeably below where the three-dot button actually is, rather than anchored directly to it.
 
 **Required fixes:**
 
-1. **Diagnose whether this is a retrieval-context or a prompting problem** (most likely both): confirm what's actually being passed to the model at query time for Excel-backed sessions — if the retrieved "chunks" for an XLSX file are just verbatim cell/row dumps with no structure or summarization, the model is being handed raw data and asked to answer with it directly, and may be echoing it back instead of reasoning over it.
-2. **Fix Excel chunking/representation for retrieval:** structure spreadsheet content meaningfully before it's embedded — e.g., represent each sheet/table with column headers preserved and rows grouped in a way that keeps tabular relationships intelligible (not one giant flat blob of raw values), so retrieval returns coherent, boundedly-sized context rather than an entire raw table dump.
-3. **Fix the generation prompt for spreadsheet-backed context:** ensure the system/task prompt explicitly instructs the model to interpret and answer from tabular data (e.g., compute, summarize, filter, or explain based on the rows/columns retrieved) rather than simply restating the raw values it was given. This must apply both to normal chat answers and to the Executive Summary / Top Keywords generation step for sessions containing Excel files.
-4. **Executive Summary must synthesize, not dump:** for any session containing an Excel document, the Executive Summary generation call must explicitly produce a small number of natural-language bullet points describing what the data shows (trends, key figures, notable rows/categories) — never the literal cell contents themselves.
-5. Add explicit test cases: (a) a factual lookup question against an Excel file ("what is X's value for Y") should return a direct, correctly-derived answer, not a table dump; (b) an aggregate/summary question ("summarize this spreadsheet" / "what are the key numbers here") should return synthesized prose or a short structured summary, not raw rows; (c) a session with an Excel file plus another format (PDF/DOCX) should be able to answer a question requiring both without either source degrading into a raw dump.
-
-### C2. Images — answers and insights are not working correctly
-
-**Observed behavior:** Questions about uploaded images produce answers that are not correct/useful, and Session Insights for sessions containing images are broken/not properly generated.
-
-**Required fixes:**
-
-1. **Verify the image ingestion path end-to-end** (this was the subject of an earlier fix — confirm it is actually functioning correctly now, not just partially): on upload, the image should go through a real vision-capable step (captioning/description and/or OCR as appropriate to the image content) and that description should be stored as retrievable content, while the raw image itself remains available for direct multimodal calls at query time.
-2. **Check whether query-time answers are actually using the image** — for a query that references an image (by filename or contextually), confirm the multimodal model call is actually being made with the image attached/available, not just against a possibly-thin or incorrect stored description. If the stored description is too sparse (e.g., a one-line caption) to answer detailed questions, prefer calling the multimodal model directly on the raw image at query time for image-specific questions, using the stored description only for cross-document semantic retrieval matching.
-3. **Fix image content in Session Insights generation:** the Executive Summary / Top Keywords generation step must correctly incorporate image content (via the same description/vision step) when a session contains images — verify this call is actually receiving image-derived content today; if it currently only receives text-format document content, that's why insights are broken for image-containing sessions.
-4. **Fix retrieval/context assembly for images specifically** — confirm image-derived content is being merged into the same ranked context as text/spreadsheet/slide content (this was part of an earlier fix; verify it is holding correctly and wasn't broken by later changes) and that it isn't being silently dropped or deprioritized.
-5. Add explicit test cases: (a) a direct question about a specific image by filename should produce an accurate, content-grounded answer; (b) a general session question that should incorporate an image among other documents should correctly draw on it; (c) Session Insights for a session containing only images, and for a session containing images plus other formats, should both generate correct, non-broken Executive Summary and Top Keywords output.
-
-### C3. Regression guard for PDF, DOCX, PPTX
-
-- These three formats are confirmed working correctly today for both chat answers and Session Insights (PPTX correctly includes slide references). Any change made for C1 (Excel) or C2 (Images) — particularly to shared retrieval/context-assembly or Session Insights generation code — must be re-verified against PDF, DOCX, and PPTX afterward to confirm no regression was introduced.
-- Add/confirm a combined test: a single session with PDF + DOCX + PPTX + XLSX + image all attached, asked a question requiring information from at least three of them, must produce one coherent, correctly-grounded answer with no format degrading into a raw dump or a broken/empty response.
+1. Fix the dropdown's positioning/anchoring so it opens immediately adjacent to the three-dot button that triggered it (directly below or beside it, per whatever the app's existing menu/popover component does elsewhere) — not offset further down the sidebar.
+2. Check whether the dropdown is being positioned with a hardcoded/static offset, or whether it's anchored to the wrong reference element (e.g., the session row's top instead of the kebab button itself, or a stale/incorrectly-measured position from before the row's height was set).
+3. If using a popover/portal-based menu, confirm it recalculates its position correctly relative to the actual trigger element's current on-screen position, including when the session list itself is scrolled.
+4. Verify visually: the dropdown should appear snapped to the kebab button with no visible gap, for every session row in the list, including the first, a middle, and the last row.
 
 ---
 
-## FINAL ACCEPANCE CRITERIA (all must be true together)
+## 4. Chat does not auto-scroll to the newest answer
 
-- [ ] Background animation loads and plays correctly on a genuine first load, on every route: Home, Product, Pricing, About, and Workspace.
-- [ ] Home, Product, Pricing, and About all scroll normally to their full page length with no scroll lock.
-- [ ] The Workspace route has zero page-level scroll (fixed viewport) with only its three internal panes scrolling independently — this scoped behavior does not leak into any other route.
-- [ ] The DocuMind header (wordmark, nav links, Launch button) is present and functional on the Workspace route, identical to its appearance on the marketing pages.
-- [ ] Session kebab menu opens a small direct dropdown with `Rename` and `Delete`, no internal scrolling required to reach either option.
-- [ ] Session create / rename / delete all work correctly, including full cleanup of messages/documents/insights on delete (per earlier fix — must still hold).
-- [ ] Processing Status timeline: no stage animates independently of real backend state (no more constant blinking on Extraction); stages progress in correct order exactly in sync with real pipeline progress; the Ready stage renders in the completed purple state once processing genuinely finishes.
-- [ ] Creating a new session shows an empty Session Insights panel (or an explicit empty state) — never the previous session's Executive Summary or Top Keywords. Switching between sessions always shows only that session's own insights.
-- [ ] Excel (XLSX) queries return real synthesized answers, never a raw data dump; Excel-containing sessions produce a real synthesized Executive Summary, never raw cell/row content.
-- [ ] Image queries return accurate, content-grounded answers; image-containing sessions produce correct, non-broken Session Insights.
-- [ ] PDF, DOCX, and PPTX chat answers and Session Insights remain correct and unregressed (PPTX still includes slide references) after all Excel/image fixes.
-- [ ] A single session with PDF + DOCX + PPTX + XLSX + image all attached can answer a question requiring information from at least three of them, correctly and coherently, in one response.
-- [ ] No changes to color values, typography, icon set, border-radius, or the background video asset/styling anywhere in this pass — every fix here is a correctness/stability fix, not a visual change.
+**Observed behavior:** When a new query is submitted and the AI's answer comes back, the conversation view does not automatically scroll down to show it — the user has to manually scroll down to see the new answer.
 
+**Required fixes:**
 
+1. Implement auto-scroll-to-bottom behavior in the message thread: whenever a new message is appended (both the user's own sent message and the AI's response arriving), the thread must automatically scroll so the newest message is fully visible, without requiring any manual scrolling.
+2. Preserve the previously-specified behavior of not yanking the user back down if they've deliberately scrolled up to read earlier history — auto-scroll should apply when the user is already at (or near) the bottom of the thread; if they've scrolled up to read older messages, a new message arriving should not forcibly snap them back down (a small "new message ↓" indicator/button to jump down is an acceptable pattern here if the app doesn't already have one, but is not required — the core requirement is: at-bottom by default, always auto-scroll to new content).
+3. Verify with a full real conversation: sending several queries in a row, each answer must land fully visible without manual scrolling, for both short and long answers.
+
+---
+
+## 5. "See details" / expand-to-read-more is appearing on every answer, including short ones
+
+**Observed behavior:** Every single AI answer is being collapsed behind a "See details ↓" / "see more" expand action, requiring an extra click to read the full response — even for answers that are not actually long. This should only happen for genuinely long responses, not as a default behavior on every answer.
+
+**Required fixes:**
+
+1. Fix the condition that decides whether a message is collapsed — it is currently either always collapsing regardless of length, or using a threshold that's far too low (or broken/always-true). It must only collapse an answer when the answer's actual rendered length exceeds a reasonable threshold (e.g., a defined character/line count that corresponds to a response that would otherwise take up a large, thread-dominating amount of vertical space) — short and medium-length answers must render in full immediately with no collapse/expand interaction at all.
+2. Confirm the collapse feature still exists and works correctly for answers that genuinely are long (this pattern was correctly present in the original reference design for long responses) — this is a threshold/condition fix, not a removal of the feature entirely.
+3. Verify across a range of real answers: a one- or two-sentence answer must render fully with no "See details" prompt; a genuinely long, multi-paragraph or multi-bullet answer should still correctly show the collapsed-with-expand pattern.
+
+---
+
+## 6. Excessive visible scrollbars inside sidebar sections make the layout look unpolished
+
+**Observed behavior:** Each independently-scrolling section (the Sessions list, the Documents list, and the Session Insights panel on the right) shows its own visible vertical scrollbar at all times, which looks cluttered and unpolished rather than clean, even when scrolling isn't actively happening.
+
+**Required fixes:**
+
+1. This is a purely cosmetic scrollbar-styling fix — the underlying independent-scroll-per-section behavior (each pane scrolling on its own, page-level scroll staying locked in the Workspace route) must be preserved exactly as-is; only the _visual appearance_ of the scrollbars themselves changes.
+2. Style scrollbars to be minimal/unobtrusive and consistent with the existing dark theme — thin, low-contrast, and ideally only appearing on hover/active-scroll rather than being permanently visible as a thick default-OS scrollbar. Use standard cross-browser scrollbar styling (e.g., `scrollbar-width: thin` plus a themed `scrollbar-color` for Firefox, and `::-webkit-scrollbar` rules for Chromium browsers) so this holds consistently across browsers, not just one.
+3. Apply this scrollbar styling to all three independently-scrolling panes (Sessions list, Documents list, Session Insights panel) plus the chat message thread, so the whole workspace has a single consistent, unobtrusive scrollbar treatment rather than each section looking different.
+4. Do not change spacing, padding, or the width of any container to achieve this — this is a scrollbar-appearance-only fix, not a layout change.
+5. Verify visually in both Chrome/Edge (Webkit-based) and Firefox that scrollbars are present and functional but no longer look like a raw, unstyled default browser scrollbar clashing with the dark theme.
+
+---
+
+## Acceptance criteria for this cycle
+
+- [ ] Background video plays correctly, on first load, on every route (Home, Product, Pricing, About, Workspace) — confirmed via network tab (asset loads) and visual inspection (actually rendering and animating), not just "attribute is present."
+- [ ] Uploading a PDF (or any document) never adds any message to the chat conversation thread — processing status is visible only in the dedicated Processing Status bar.
+- [ ] The session kebab menu's Rename/Delete dropdown opens snapped directly to its trigger button, for every session row.
+- [ ] The chat thread automatically scrolls to show a new answer as soon as it arrives, for every query, without manual scrolling — while not forcibly yanking the view if the user has intentionally scrolled up.
+- [ ] Short and medium AI answers render in full immediately with no "See details" prompt; only genuinely long answers use the collapse/expand pattern.
+- [ ] Sessions list, Documents list, Session Insights panel, and the chat message thread all use a thin, unobtrusive, theme-consistent scrollbar style instead of a default thick browser scrollbar, in both Webkit and Firefox — with the existing independent per-section scroll behavior and fixed-viewport Workspace layout otherwise completely unchanged.
+- [ ] No regressions: page scroll on all routes, the dedicated Processing Status timeline's real-time stage progression, and Session Insights population/scoping all remain exactly as they currently work correctly.
+- [ ] No changes to color values, typography, icon set, border-radius, or any component's visual design beyond the specific scrollbar-appearance fix in item 6.
