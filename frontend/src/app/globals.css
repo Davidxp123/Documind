@@ -15,10 +15,6 @@ html {
   background: #000;
 }
 
-html, body, #__next {
-  height: 100%;
-}
-
 *, *::before, *::after {
   box-sizing: border-box;
 }

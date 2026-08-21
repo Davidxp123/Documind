@@ -84,30 +84,40 @@ class InsightsExtractor:
     @classmethod
     def generate_document_insights(cls, full_text: str) -> dict:
         if groq_client.client:
-            try:
-                prompt = f"""
-Analyze the following document text and return ONLY a JSON object with this exact structure:
+            models_to_try = [groq_client.model] + groq_client.fallback_models
+            for model_name in models_to_try:
+                try:
+                    prompt = f"""You are DocuMind AI. Analyze the following document text and return ONLY a valid JSON object.
+
+Strict Instructions:
+1. "summary": Provide a synthesized, high-level Executive Summary (3-4 natural-language sentences or bullet points). If the document is a spreadsheet or table, summarize the key metrics, trends, column headers, and business insights. NEVER output raw markdown tables, raw comma-separated lists, or cell dumps in the summary. If the document is an image or diagram, summarize the visual structure, OCR text, and key takeaways.
+2. "keywords": Array of 4 to 8 relevant capitalized keywords.
+3. "timeline": Array of date/year events if mentioned in the document, otherwise empty array [].
+4. "entities": Array of key named entities or categories mentioned, otherwise empty array [].
+
+JSON structure:
 {{
-  "summary": "Executive summary of 3-4 sentences...",
-  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "summary": "Executive summary...",
+  "keywords": ["Keyword1", "Keyword2"],
   "timeline": [{{"date_or_year": "...", "event": "..."}}],
-  "entities": ["entity1", "entity2"]
+  "entities": ["Entity1", "Entity2"]
 }}
 
 Document Content:
-{full_text[:10000]}
+{full_text[:12000]}
 """
-                chat_completion = groq_client.client.chat.completions.create(
-                    messages=[{"role": "user", "content": prompt}],
-                    model=groq_client.model,
-                    response_format={"type": "json_object"}
-                )
-                response_text = chat_completion.choices[0].message.content.strip()
-                parsed = json.loads(response_text)
-                if isinstance(parsed, dict) and "summary" in parsed and "keywords" in parsed:
-                    return parsed
-            except Exception as e:
-                print(f"[ERROR] Groq insights extraction failed: {e}")
+                    chat_completion = groq_client.client.chat.completions.create(
+                        messages=[{"role": "user", "content": prompt}],
+                        model=model_name,
+                        response_format={"type": "json_object"}
+                    )
+                    response_text = chat_completion.choices[0].message.content.strip()
+                    parsed = json.loads(response_text)
+                    if isinstance(parsed, dict) and "summary" in parsed and "keywords" in parsed:
+                        return parsed
+                except Exception as e:
+                    print(f"[ERROR] Groq insights extraction with {model_name} failed: {e}")
+                    continue
 
         return cls._extract_nlp_insights(full_text)
 

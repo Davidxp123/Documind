@@ -267,18 +267,35 @@ export default function WorkspacePage() {
     initWorkspace();
   }, [workspaceId]);
 
+  // Close dropdowns on outside click or Escape
+  useEffect(() => {
+    const handleGlobalClick = () => {
+      setActiveMenuSessionId(null);
+      setActiveMenuDocId(null);
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setActiveMenuSessionId(null);
+        setActiveMenuDocId(null);
+      }
+    };
+    window.addEventListener('click', handleGlobalClick);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('click', handleGlobalClick);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
+
   const pollDocumentStatus = async (docId: string | null) => {
     if (!docId) return;
     setIsProcessing(true);
-    setProcessingStage(1);
+    setProcessingStage(1); // Upload Complete
 
     let count = 0;
-    let stageInterval = 1;
 
     const interval = setInterval(async () => {
       count += 1;
-      stageInterval = Math.min(4, stageInterval + 1);
-      setProcessingStage(stageInterval);
 
       try {
         const response = await fetch(`${API_BASE}/documents/workspace/${workspaceId}`);
@@ -288,29 +305,36 @@ export default function WorkspacePage() {
           updateSessionDocsFromWorkspace(docs);
 
           const doc = docs.find((item) => item.id === docId);
-          if (!doc || doc.status === 'completed' || doc.status.startsWith('failed') || count >= 20) {
-            clearInterval(interval);
-            setIsProcessing(false);
-            setProcessingStage(5);
+          if (doc) {
+            if (doc.status === 'processing') {
+              // Real progress transitions
+              if (count === 1) setProcessingStage(2); // Extraction
+              else if (count === 2) setProcessingStage(3); // Embedding
+              else setProcessingStage(4); // Analysis
+            } else if (doc.status === 'completed' || doc.status.startsWith('failed') || count >= 25) {
+              clearInterval(interval);
+              setIsProcessing(false);
+              setProcessingStage(5); // Ready
 
-            if (doc?.status === 'completed') {
-              appendSessionMessage({
-                role: 'assistant',
-                text: `Document **${doc.filename}** has finished processing and is ready for queries.`,
-              });
-            } else if (doc?.status.startsWith('failed')) {
-              setError(`Document processing failed: ${doc.status}`);
+              if (doc.status === 'completed') {
+                appendSessionMessage({
+                  role: 'assistant',
+                  text: `Document **${doc.filename}** has finished processing and is ready for queries.`,
+                });
+              } else if (doc.status.startsWith('failed')) {
+                setError(`Document processing failed: ${doc.status}`);
+              }
             }
           }
         }
       } catch (err) {
-        if (count >= 10) {
+        if (count >= 15) {
           clearInterval(interval);
           setIsProcessing(false);
           setProcessingStage(5);
         }
       }
-    }, 2000);
+    }, 1500);
   };
 
   const handleSend = async () => {
@@ -565,13 +589,13 @@ export default function WorkspacePage() {
   const getTopInsights = () => {
     const insights: string[] = [];
 
-    // From attached document summaries
+    // From attached document summaries in current session
     for (const doc of currentSession.docs) {
       if (doc.summary) {
         const sentences = doc.summary
           .split(/(?<=[.!?])\s+|\n+/)
           .map((s) => s.replace(/^[-*•]\s*/, '').trim())
-          .filter((s) => s.length > 25);
+          .filter((s) => s.length > 20);
         for (const sentence of sentences) {
           if (insights.length >= 8) break;
           if (!insights.includes(sentence)) {
@@ -581,19 +605,6 @@ export default function WorkspacePage() {
       }
     }
 
-    // Default high-fidelity insights matching reference if empty
-    if (insights.length === 0) {
-      return [
-        'Requirements: Time-Series Forecasting Models using advanced models (e.g., Prophet, LSTM) to identify seasonal demand trends.',
-        'Customer-specific purchase cycles with variable diameters and alloy-wise demands.',
-        'CRM integration for project probability scoring and weighted order assignments.',
-        'Pipeline visibility with billet and alloy forecasts rolling 15-30-45- day demand.',
-        'Daily refresh capability based on orders punched and direct integration with procurement & foundry planning.',
-        'Optimization goals: minimize melt charge cost, LME-linked pricing, internal scrap grades, external scrap, and master alloys.',
-        'Constraints: furnace capacities, batch sequences, downtime, & changeovers.',
-        'Outputs: optimized heat charge sheet, dynamic safety stock, lead-time buffers, and supplier reliability scoring.',
-      ];
-    }
     return insights;
   };
 
@@ -625,15 +636,10 @@ export default function WorkspacePage() {
       }
     }
 
-    const extracted = Object.entries(counts)
+    return Object.entries(counts)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([keyword]) => keyword.charAt(0).toUpperCase() + keyword.slice(1));
-
-    if (extracted.length < 4) {
-      return ['Forecasting', 'Optimization', 'CRM Integration', 'Alloy-wise', 'Rolling Forecast', 'Constraints'];
-    }
-    return extracted;
   };
 
   const formatFileSize = (bytes: number) => {
@@ -665,7 +671,7 @@ export default function WorkspacePage() {
   const displayedDocs = showAllDocs ? currentSession.docs : currentSession.docs.slice(0, 6);
 
   return (
-    <div className="h-screen w-full p-2.5 sm:p-4 lg:p-5 flex flex-col overflow-hidden bg-transparent select-none">
+    <div className="h-[calc(100vh-73px)] w-full p-2.5 sm:p-4 lg:p-5 flex flex-col overflow-hidden bg-transparent select-none">
       {/* 3-Column Glass Card Container matching Updated-UI.png */}
       <div className="w-full h-full max-w-[1780px] mx-auto rounded-[28px] border border-white/15 bg-black/65 backdrop-blur-2xl grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] xl:grid-cols-[300px_1fr_340px] overflow-hidden shadow-2xl min-h-0">
         
@@ -736,23 +742,23 @@ export default function WorkspacePage() {
                         <MoreVertical className="w-3.5 h-3.5" />
                       </button>
 
-                      {/* Dropdown Menu */}
+                      {/* Dropdown Menu - direct 2-item compact popover, no scrolling */}
                       {activeMenuSessionId === session.id && (
                         <div
-                          className="absolute right-0 top-full mt-1 z-50 w-28 rounded-xl border border-white/15 bg-[#121216] backdrop-blur-xl shadow-2xl py-1 overflow-hidden"
+                          className="absolute right-0 top-full mt-1 z-50 w-32 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
                           onClick={(e) => e.stopPropagation()}
                         >
                           <button
                             onClick={() => renameSession(session.id)}
-                            className="w-full px-3 py-1.5 text-left text-[11px] text-white/80 hover:bg-white/10 hover:text-white flex items-center gap-2"
+                            className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
                           >
-                            <Edit2 className="w-3 h-3 text-white/60" /> Rename
+                            <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
                           </button>
                           <button
                             onClick={() => deleteSession(session.id)}
-                            className="w-full px-3 py-1.5 text-left text-[11px] text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
+                            className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
                           >
-                            <Trash2 className="w-3 h-3 text-red-400" /> Delete
+                            <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
                           </button>
                         </div>
                       )}
@@ -792,7 +798,7 @@ export default function WorkspacePage() {
                 or click to browse
               </p>
               <p className="text-[10px] text-white/40 mt-1.5">
-                Supported formats: PDF, DOCX, CSV, PPTX, TXT, MD
+                Supported formats: PDF, DOCX, CSV, PPTX, TXT, MD, Images
               </p>
             </div>
 
@@ -821,7 +827,7 @@ export default function WorkspacePage() {
                             className={`text-[9px] px-1.5 py-0.2 rounded-md max-w-[85px] truncate font-medium ${
                               doc.status.startsWith('failed')
                                 ? 'bg-red-500/20 text-red-300 border border-red-500/30'
-                                : 'bg-purple-500/20 text-purple-300 border border-purple-500/30 animate-pulse'
+                                : 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
                             }`}
                             title={doc.status}
                           >
@@ -847,28 +853,28 @@ export default function WorkspacePage() {
 
                     {activeMenuDocId === doc.id && (
                       <div
-                        className="absolute right-0 top-full mt-1 z-50 w-28 rounded-xl border border-white/15 bg-[#121216] backdrop-blur-xl shadow-2xl py-1 overflow-hidden"
+                        className="absolute right-0 top-full mt-1 z-50 w-32 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
                         onClick={(e) => e.stopPropagation()}
                       >
                         <button
                           onClick={() => handleRenameDocument(doc.id, doc.filename)}
-                          className="w-full px-3 py-1.5 text-left text-[11px] text-white/80 hover:bg-white/10 hover:text-white flex items-center gap-2"
+                          className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
                         >
-                          <Edit2 className="w-3 h-3 text-white/60" /> Rename
+                          <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
                         </button>
                         {doc.status.startsWith('failed') && (
                           <button
                             onClick={() => handleRetryDocument(doc.id)}
-                            className="w-full px-3 py-1.5 text-left text-[11px] text-purple-400 hover:bg-purple-500/10 hover:text-purple-300 flex items-center gap-2"
+                            className="w-full px-3 py-2 text-left text-xs text-purple-400 hover:bg-purple-500/10 hover:text-purple-300 flex items-center gap-2"
                           >
-                            <RotateCcw className="w-3 h-3 text-purple-400" /> Retry
+                            <RotateCcw className="w-3.5 h-3.5 text-purple-400" /> Retry
                           </button>
                         )}
                         <button
                           onClick={() => handleDeleteDocument(doc.id)}
-                          className="w-full px-3 py-1.5 text-left text-[11px] text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
+                          className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
                         >
-                          <Trash2 className="w-3 h-3 text-red-400" /> Delete
+                          <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
                         </button>
                       </div>
                     )}
@@ -991,7 +997,7 @@ export default function WorkspacePage() {
           {/* Bottom Container: Processing Status Timeline + Sticky Chat Input */}
           <div className="p-4 md:p-5 border-t border-white/10 bg-black/40 backdrop-blur-md flex-shrink-0 space-y-3">
             
-            {/* Horizontal Animated Processing Status Timeline matching Updated-UI.png */}
+            {/* Horizontal Animated Processing Status Timeline */}
             <div className="flex items-center justify-between gap-3 px-2 py-1">
               <div className="flex items-center gap-1.5 flex-shrink-0">
                 <Activity className="w-3.5 h-3.5 text-purple-400" />
@@ -1020,12 +1026,14 @@ export default function WorkspacePage() {
                 <div className="flex flex-col items-center">
                   <div
                     className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-300 ${
-                      processingStage >= 2
-                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 animate-pulse'
-                        : 'bg-white/10 border border-white/15'
+                      processingStage === 2
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 animate-pulse text-white'
+                        : processingStage > 2
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 text-white'
+                        : 'bg-white/10 border border-white/15 text-white/40'
                     }`}
                   >
-                    <Sparkles className="w-3 h-3 text-white" />
+                    {processingStage > 2 ? <Check className="w-3.5 h-3.5 text-white" /> : <Sparkles className="w-3 h-3 text-white" />}
                   </div>
                   <span className="text-[9px] text-white/60 mt-1 whitespace-nowrap hidden sm:inline">
                     Extraction
@@ -1042,12 +1050,14 @@ export default function WorkspacePage() {
                 <div className="flex flex-col items-center">
                   <div
                     className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-300 ${
-                      processingStage >= 3
-                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40'
-                        : 'bg-white/10 border border-white/15'
+                      processingStage === 3
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 animate-pulse text-white'
+                        : processingStage > 3
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 text-white'
+                        : 'bg-white/10 border border-white/15 text-white/40'
                     }`}
                   >
-                    <Sparkles className="w-3 h-3 text-white" />
+                    {processingStage > 3 ? <Check className="w-3.5 h-3.5 text-white" /> : <Sparkles className="w-3 h-3 text-white" />}
                   </div>
                   <span className="text-[9px] text-white/60 mt-1 whitespace-nowrap hidden sm:inline">
                     Embedding
@@ -1064,12 +1074,14 @@ export default function WorkspacePage() {
                 <div className="flex flex-col items-center">
                   <div
                     className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-300 ${
-                      processingStage >= 4
-                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40'
-                        : 'bg-white/10 border border-white/15'
+                      processingStage === 4
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 animate-pulse text-white'
+                        : processingStage > 4
+                        ? 'bg-purple-600 border border-purple-300 shadow-md shadow-purple-500/40 text-white'
+                        : 'bg-white/10 border border-white/15 text-white/40'
                     }`}
                   >
-                    <Sparkles className="w-3 h-3 text-white" />
+                    {processingStage > 4 ? <Check className="w-3.5 h-3.5 text-white" /> : <Sparkles className="w-3 h-3 text-white" />}
                   </div>
                   <span className="text-[9px] text-white/60 mt-1 whitespace-nowrap hidden sm:inline">
                     Analysis
@@ -1087,11 +1099,11 @@ export default function WorkspacePage() {
                   <div
                     className={`w-6 h-6 rounded-full flex items-center justify-center transition-all duration-300 ${
                       processingStage >= 5
-                        ? 'bg-white/15 border border-white/30 text-white'
+                        ? 'bg-purple-600 border border-purple-300 text-white shadow-md shadow-purple-500/40'
                         : 'bg-white/5 border border-white/10 text-white/40'
                     }`}
                   >
-                    <CheckCircle2 className="w-3 h-3" />
+                    <CheckCircle2 className="w-3.5 h-3.5" />
                   </div>
                   <span className="text-[9px] text-white/60 mt-1 whitespace-nowrap hidden sm:inline">
                     Ready
@@ -1186,12 +1198,19 @@ export default function WorkspacePage() {
               EXECUTIVE SUMMARY
             </span>
             <div className="overflow-y-auto pr-1 space-y-2.5 text-xs text-white/80 leading-relaxed">
-              {getTopInsights().map((insight, idx) => (
-                <div key={idx} className="flex items-start gap-2">
-                  <span className="text-purple-400 mt-0.5">•</span>
-                  <span>{insight}</span>
+              {getTopInsights().length > 0 ? (
+                getTopInsights().map((insight, idx) => (
+                  <div key={idx} className="flex items-start gap-2">
+                    <span className="text-purple-400 mt-0.5 flex-shrink-0">•</span>
+                    <span>{insight}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="flex flex-col items-center justify-center h-32 text-center text-white/40 text-xs px-2">
+                  <p>No insights yet.</p>
+                  <p className="mt-1 text-[11px] text-white/30">Upload a document or start a conversation to generate session insights.</p>
                 </div>
-              ))}
+              )}
             </div>
           </div>
 
@@ -1201,14 +1220,18 @@ export default function WorkspacePage() {
               TOP KEYWORDS
             </span>
             <div className="flex flex-wrap gap-2 overflow-y-auto max-h-36 pr-1">
-              {getTopKeywords().map((kw) => (
-                <span
-                  key={kw}
-                  className="text-xs px-3.5 py-1.5 rounded-full bg-white/[0.05] border border-white/10 text-white/80 hover:bg-white/10 hover:text-white transition-all cursor-default"
-                >
-                  {kw}
-                </span>
-              ))}
+              {getTopKeywords().length > 0 ? (
+                getTopKeywords().map((kw) => (
+                  <span
+                    key={kw}
+                    className="text-xs px-3.5 py-1.5 rounded-full bg-white/[0.05] border border-white/10 text-white/80 hover:bg-white/10 hover:text-white transition-all cursor-default"
+                  >
+                    {kw}
+                  </span>
+                ))
+              ) : (
+                <p className="text-xs text-white/40 py-2">No keywords extracted yet.</p>
+              )}
             </div>
           </div>
         </aside>

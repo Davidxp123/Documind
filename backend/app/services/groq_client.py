@@ -12,8 +12,9 @@ class GroqClient:
             self.client = None
             print("[WARNING] GROQ_API_KEY not found in settings!")
             
-        # Using a current Groq-hosted model
-        self.model = "llama-3.3-70b-versatile"
+        # Using a verified active Groq model
+        self.model = "openai/gpt-oss-120b"
+        self.fallback_models = ["openai/gpt-oss-20b", "groq/compound"]
 
     def detect_query_intent(self, query: str) -> str:
         q_lower = query.lower()
@@ -83,47 +84,55 @@ class GroqClient:
         intent = self.detect_query_intent(query)
         
         if self.client:
-            try:
-                if intent == "short":
-                    length_instruction = "Deliver a concise, direct answer (2-3 sentences or compact bullets)."
-                elif intent == "detailed":
-                    length_instruction = "Deliver a thorough, comprehensive, structured response with clear Markdown bullet points, bold highlights, and headers."
-                else:
-                    length_instruction = "Deliver a clear, professional, well-structured answer using Markdown bullets or paragraphs (60-120 words)."
+            models_to_try = [self.model] + self.fallback_models
+            for model_name in models_to_try:
+                try:
+                    if intent == "short":
+                        length_instruction = "Deliver a concise, direct answer (2-3 sentences or compact bullets)."
+                    elif intent == "detailed":
+                        length_instruction = "Deliver a thorough, comprehensive, structured response with clear Markdown bullet points, bold highlights, and headers."
+                    else:
+                        length_instruction = "Deliver a clear, professional, well-structured answer using Markdown bullets or paragraphs (60-120 words)."
 
-                passages_text = "\n\n".join(snippets[:8])
-                system_prompt = f"""You are DocuMind AI, an enterprise-grade document intelligence assistant.
-Your job is to answer user inquiries strictly grounded in the provided document passages across all file formats (PDF, DOCX, XLSX spreadsheets, PPTX presentations, and Image attachments).
+                    passages_text = "\n\n".join(snippets[:10])
+                    system_prompt = f"""You are DocuMind AI, an enterprise-grade document intelligence assistant.
+Your job is to answer user inquiries strictly grounded in the provided document passages across all supported file formats:
+- PDF and DOCX files
+- Excel/CSV spreadsheets: Synthesize, interpret, compute, filter, and explain tabular data in natural language. NEVER dump raw tables or echo raw comma/pipe-separated cell lists back to the user. Always answer the question directly with clear figures, metrics, and insights derived from the table records.
+- PowerPoint (PPTX) presentations: Cite relevant slide numbers (e.g. 'Slide 3 of 10') where helpful.
+- Image attachments & diagrams: Ground answers in the visual document OCR labels, text, diagrams, and metadata provided.
 
-Guidelines:
+Strict Guidelines:
 1. Ground your response directly in the provided passages. Cite relevant document names or page/sheet/slide numbers where helpful.
-2. If the user mentions a specific file (e.g. 'agile.png', 'Banco.pdf', 'Requirements.xlsx'), focus your answer on the content extracted from that file.
-3. If combining information from multiple documents (e.g. numbers from a spreadsheet and context from a PDF), present a cohesive, synthesised answer.
-4. If the provided passages do not contain the answer, state what related information is available from the documents and clearly state what is missing without guessing.
+2. If the user mentions a specific file (e.g. 'agile.png', 'Banco.pdf', 'Requirements.xlsx', 'Data.csv'), focus your answer on the content extracted from that file.
+3. If combining information from multiple documents (e.g. numbers from a spreadsheet, points from a slide deck, and context from a PDF/image), present a cohesive, synthesised answer addressing all requested aspects.
+4. If the provided passages do not contain the complete answer, state what related facts are available from the documents and state what is missing without hallucinating.
 5. Format your output with clean Markdown formatting (bullet points, bold text).
 
 Format requirement: {length_instruction}"""
 
-                chat_completion = self.client.chat.completions.create(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": system_prompt
-                        },
-                        {
-                            "role": "user",
-                            "content": f"User Query: {query}\n\nDocument Passages:\n{passages_text}"
-                        }
-                    ],
-                    model=self.model,
-                )
-                ans = chat_completion.choices[0].message.content.strip()
-                if ans:
-                    return ans
-                    
-            except Exception as e:
-                print(f"[ERROR] Groq API call failed: {e}")
-                print("[INFO] Falling back to local synthesis...")
+                    chat_completion = self.client.chat.completions.create(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": system_prompt
+                            },
+                            {
+                                "role": "user",
+                                "content": f"User Query: {query}\n\nDocument Passages:\n{passages_text}"
+                            }
+                        ],
+                        model=model_name,
+                    )
+                    ans = chat_completion.choices[0].message.content.strip()
+                    if ans:
+                        return ans
+                        
+                except Exception as e:
+                    print(f"[ERROR] Groq API call with {model_name} failed: {e}")
+                    continue
+
+            print("[INFO] Falling back to local synthesis...")
         else:
             print("[WARNING] Groq client not initialized!")
 

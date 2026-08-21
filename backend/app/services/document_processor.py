@@ -8,22 +8,44 @@ from pptx import Presentation
 from bs4 import BeautifulSoup
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-def _format_dataframe(df: pd.DataFrame, max_rows: int = 100) -> str:
-    """Safely format a pandas dataframe into readable text/markdown."""
+def _format_dataframe(df: pd.DataFrame, max_rows: int = 150) -> str:
+    """Safely format a pandas dataframe into readable markdown table and summary context."""
     try:
         if df.empty:
             return "(Empty table/sheet)"
-        # Clean null values
+        
+        # Clean null values and format headers
         clean_df = df.fillna("")
+        total_rows, total_cols = df.shape
+        columns_list = [str(c).strip() for c in df.columns]
+        
+        summary_header = f"Table Schema & Dimensions: {total_rows} rows × {total_cols} columns\nColumns: {', '.join(columns_list)}\n"
+        
+        # Numerical summary for key columns if any
+        num_cols = df.select_dtypes(include=['number']).columns.tolist()
+        num_summary = ""
+        if num_cols:
+            stats = []
+            for col in num_cols[:6]:
+                col_series = df[col].dropna()
+                if not col_series.empty:
+                    stats.append(f"{col} (min: {col_series.min()}, max: {col_series.max()}, mean: {col_series.mean():.2f})")
+            if stats:
+                num_summary = f"Numeric Column Summaries: {'; '.join(stats)}\n\n"
+
         if len(clean_df) > max_rows:
-            clean_df = clean_df.head(max_rows)
-            truncated_msg = f"\n... [Showing first {max_rows} rows of {len(df)} total rows]"
+            display_df = clean_df.head(max_rows)
+            truncated_msg = f"\n... [Showing first {max_rows} rows of {total_rows} total rows]"
         else:
+            display_df = clean_df
             truncated_msg = ""
+
         try:
-            return clean_df.to_markdown(index=False) + truncated_msg
+            table_md = display_df.to_markdown(index=False)
         except Exception:
-            return clean_df.to_string(index=False) + truncated_msg
+            table_md = display_df.to_string(index=False)
+
+        return f"{summary_header}{num_summary}Data Records (Markdown Table):\n{table_md}{truncated_msg}"
     except Exception as e:
         return f"(Error formatting table: {e})"
 
@@ -81,27 +103,41 @@ class DocumentProcessor:
                         pages_content.append({"page": 1, "text": f"CSV Content:\n{_format_dataframe(df)}"})
                 else:
                     try:
-                        xl = pd.ExcelFile(file_path, engine="openpyxl")
+                        with pd.ExcelFile(file_path, engine="openpyxl") as xl:
+                            sheet_names = xl.sheet_names or ["Sheet1"]
+                            for idx, sheet_name in enumerate(sheet_names):
+                                try:
+                                    df = xl.parse(sheet_name)
+                                    formatted = _format_dataframe(df)
+                                    pages_content.append({
+                                        "page": idx + 1,
+                                        "text": f"Sheet {idx + 1} ({sheet_name}):\n{formatted}"
+                                    })
+                                except Exception as sheet_err:
+                                    pages_content.append({
+                                        "page": idx + 1,
+                                        "text": f"Sheet {idx + 1} ({sheet_name}): Error parsing sheet: {sheet_err}"
+                                    })
                     except Exception:
                         try:
-                            xl = pd.ExcelFile(file_path)
+                            with pd.ExcelFile(file_path) as xl:
+                                sheet_names = xl.sheet_names or ["Sheet1"]
+                                for idx, sheet_name in enumerate(sheet_names):
+                                    try:
+                                        df = xl.parse(sheet_name)
+                                        formatted = _format_dataframe(df)
+                                        pages_content.append({
+                                            "page": idx + 1,
+                                            "text": f"Sheet {idx + 1} ({sheet_name}):\n{formatted}"
+                                        })
+                                    except Exception as sheet_err:
+                                        pages_content.append({
+                                            "page": idx + 1,
+                                            "text": f"Sheet {idx + 1} ({sheet_name}): Error parsing sheet: {sheet_err}"
+                                        })
                         except Exception as excel_open_err:
                             raise ValueError(f"Unable to read Excel workbook: {excel_open_err}")
                     
-                    sheet_names = xl.sheet_names or ["Sheet1"]
-                    for idx, sheet_name in enumerate(sheet_names):
-                        try:
-                            df = xl.parse(sheet_name)
-                            formatted = _format_dataframe(df)
-                            pages_content.append({
-                                "page": idx + 1,
-                                "text": f"Sheet {idx + 1} ({sheet_name}):\n{formatted}"
-                            })
-                        except Exception as sheet_err:
-                            pages_content.append({
-                                "page": idx + 1,
-                                "text": f"Sheet {idx + 1} ({sheet_name}): Error parsing sheet: {sheet_err}"
-                            })
                     if not pages_content:
                         pages_content.append({"page": 1, "text": f"Excel file {filename} (empty sheets)"})
 
