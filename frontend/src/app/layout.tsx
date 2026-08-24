@@ -14,7 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className="min-h-full bg-black">
-      <body className="relative text-white min-h-screen bg-black antialiased selection:bg-white selection:text-black">
+      <body className="relative text-white min-h-screen bg-transparent antialiased selection:bg-white selection:text-black">
         <BackgroundVideo />
         <Navbar />
         {children}

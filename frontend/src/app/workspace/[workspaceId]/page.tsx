@@ -742,7 +742,7 @@ export default function WorkspacePage() {
             </div>
 
             {/* Session List */}
-            <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
+            <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1 workspace-scroll">
               {sessions.map((session) => {
                 const isActive = session.id === currentSessionId;
                 return (
@@ -826,7 +826,7 @@ export default function WorkspacePage() {
             </div>
 
             {/* Document List */}
-            <div className="space-y-2 mt-3 flex-1 overflow-y-auto pr-1">
+            <div className="space-y-2 mt-3 flex-1 overflow-y-auto pr-1 workspace-scroll">
               {displayedDocs.map((doc) => (
                 <div
                   key={doc.id}
@@ -948,8 +948,8 @@ export default function WorkspacePage() {
             {currentMessages.map((message, index) => {
               const isAssistant = message.role === 'assistant';
               const isExpanded = expandedMessages[index] ?? false;
-              // Fix 5: only collapse genuinely long answers (>1200 chars)
-              const isLong = message.text.length > 1200;
+              // Fix 5: only collapse genuinely long answers (>1800 chars)
+              const isLong = isAssistant && message.text.length > 1800;
 
               return (
                 <div
@@ -975,7 +975,7 @@ export default function WorkspacePage() {
                       <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1.5 prose-li:my-0.5">
                         <ReactMarkdown>
                           {isLong && !isExpanded
-                            ? `${message.text.slice(0, 600)}...`
+                            ? `${message.text.slice(0, 900)}...`
                             : message.text}
                         </ReactMarkdown>
                         {isLong && (
