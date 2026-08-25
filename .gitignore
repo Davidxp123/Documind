@@ -9,6 +9,17 @@
 node_modules/
 **/node_modules/
 
+# Python virtual environments
+venv/
+**/venv/
+.venv/
+**/.venv/
+
+# Python cache / compiled files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
 # Next.js
 .next/
 **/.next/
@@ -41,4 +52,11 @@ coverage/
 *.tmp
 *.temp
 
+# Local vector database
+backend/storage/chroma_db/
+
+# Local agent/tool data
+.agent/
+
+guide.txt
 

@@ -1,3 +1,6 @@
+new - pending prompt.md file
+------------x-----------
+below is the old one
 # DocuMind — Next Development Cycle: Video Playback, Chat Interface Cleanup & Scroll UX
 
 This is the current, authoritative spec for this development cycle. The previous round's fixes are confirmed to have landed correctly for these items — **do not regress them**:
