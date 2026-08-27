@@ -58,14 +58,16 @@
 ./backend/storage
 ./backend/storage/chroma_db
 ./backend/storage/docs
-./backend/storage/docs/21b03034-622a-4606-9751-19b6c2117e1f.pptx
-./backend/storage/docs/2f8033bf-db76-4e69-82f9-c940a8ec77b3.xlsx
-./backend/storage/docs/5c9be361-603e-4dc7-829f-b161b17c9a17.pdf
 ./backend/storage/docs/9b612686-4668-4042-8fca-a28b840fc716.xlsx
+./backend/storage/docs/a570c0d7-da29-485b-a6d1-02e8a552eb67.png
 ./backend/storage/docs/c0d2fc86-d704-4631-aab8-1f4a1248ca86.xlsx
-./backend/storage/docs/c0f85fa9-cb7c-4fbc-8286-8f3f1c0d6777.docx
-./backend/storage/docs/eae0ddd6-b13f-47ce-964a-f7ec2cce094c.png
+./backend/storage/docs/e0a1e96e-ae85-49a4-9268-6271ab4da425.pdf
+./backend/storage/docs/e0d660a8-d8fb-4ac5-a65e-effa8cdd798c.pdf
+./backend/storage/docs/e1b6a92f-3b46-467b-9f6b-85f43ce096b5.pptx
+./backend/storage/docs/e90436b8-66bf-4f2f-96e8-045402307aad.xlsx
+./backend/storage/docs/f26c31cb-0cd7-4eac-8c26-dda34341fb8c.docx
 ./backend/storage/docs/f79e31be-31d4-44f5-862e-aabf540ef469.pdf
+./backend/storage/docs/fc3eef6b-e500-4fbb-ae4f-f3fcab26957d.png
 ./backend/storage/sqlite
 ./backend/storage/sqlite/docmind.db
 ./frontend
@@ -74,6 +76,7 @@
 ./frontend/package-lock.json
 ./frontend/package.json
 ./frontend/postcss.config.js
+./frontend/public
 ./frontend/src
 ./frontend/src/app
 ./frontend/src/app/about
@@ -98,5 +101,6 @@
 ./frontend/tailwind.config.ts
 ./frontend/tsconfig.json
 ./frontend/tsconfig.tsbuildinfo
+./guide.txt
 ./prompt.md
 ./structure.txt
