@@ -1,6 +1,7 @@
 import './globals.css';
 import BackgroundVideo from '@/components/Background/BackgroundVideo';
 import Navbar from '@/components/Navbar';
+import { AuthProvider } from '@/context/AuthContext';
 
 export const metadata = {
   title: 'DocuMind – Enterprise RAG Workspace',
@@ -15,9 +16,11 @@ export default function RootLayout({
   return (
     <html lang="en" className="min-h-full bg-black">
       <body className="relative text-white min-h-screen bg-transparent antialiased selection:bg-white selection:text-black">
-        <BackgroundVideo />
-        <Navbar />
-        {children}
+        <AuthProvider>
+          <BackgroundVideo />
+          <Navbar />
+          {children}
+        </AuthProvider>
       </body>
     </html>
   );

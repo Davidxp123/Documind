@@ -19,9 +19,11 @@ class Session(Base):
     __tablename__ = "sessions"
 
     id = Column(String, primary_key=True, index=True)
-    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, default="default")
+    user_id = Column(String, nullable=True, index=True)
     name = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="sessions")
     documents = relationship("Document", back_populates="session", cascade="all, delete-orphan")
@@ -31,7 +33,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String, primary_key=True, index=True)
-    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, default="default")
     session_id = Column(String, ForeignKey("sessions.id"), nullable=True)
     filename = Column(String, nullable=False)
     file_type = Column(String, nullable=False)
@@ -43,6 +45,7 @@ class Document(Base):
     keywords = Column(JSON, nullable=True)
     timeline = Column(JSON, nullable=True)
     entities = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
 
     workspace = relationship("Workspace", back_populates="documents")
@@ -52,7 +55,7 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id = Column(String, primary_key=True, index=True)
-    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=False)
+    workspace_id = Column(String, ForeignKey("workspaces.id"), nullable=True, default="default")
     session_id = Column(String, ForeignKey("sessions.id"), nullable=True)
     role = Column(String, nullable=False) # user, assistant
     content = Column(Text, nullable=False)

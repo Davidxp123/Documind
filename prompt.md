@@ -1,105 +1,158 @@
-new - pending prompt.md file
-------------x-----------
-below is the old one
-# DocuMind — Next Development Cycle: Video Playback, Chat Interface Cleanup & Scroll UX
+# DocuMind — Phase: Supabase Auth + Persistent User Sessions
 
-This is the current, authoritative spec for this development cycle. The previous round's fixes are confirmed to have landed correctly for these items — **do not regress them**:
+## Context (read this first)
 
-- Page scrolling now works correctly on all pages (Home, Product, Pricing, About, Workspace).
-- The dedicated Processing Status timeline (the horizontal stage bar above the chat input) is working correctly — stages progress in sync with real backend status, animate correctly, and land on the completed "Ready" state.
-- Session Insights (Executive Summary + Top Keywords) are populating correctly and are correctly scoped per session.
+DocuMind is an existing, working full-stack RAG (retrieval-augmented generation) application:
 
-This cycle fixes the remaining issues below, confirmed by direct testing. Do not change colors, typography, icon set, border-radius, or overall theme/styling anywhere in this pass — every item here is a functional/UX correctness fix, not a visual redesign.
+- **Frontend:** Next.js, glassmorphic dark UI (already finalized — do not redesign or restyle existing pages/components)
+- **Backend:** FastAPI
+- **Current functionality that already works and MUST continue working exactly as-is:**
+  - Document upload/processing/removal for multiple file types (PDF, DOCX, CSV, PPTX, TXT, MD, images)
+  - Processing status timeline (Upload Complete → Extraction → Embedding → Analysis → Ready)
+  - Conversational AI assistant chat grounded in uploaded documents, with cited sources
+  - Session management (create/rename/delete) — **currently local/in-memory, not tied to any user account or database**
+  - Session Insights panel (executive summary + top keywords)
+  - Document library per session
+- **Current gap this phase closes:** there is no authentication. The app is fully public. Sessions are not persisted per user — anyone can see any session, and nothing survives across devices/logins.
 
----
+## Goal of this phase
 
-## 1. Background video animation still does not load/play on any page
+Add **Supabase (Auth + Postgres)** so that:
 
-**Observed behavior:** Despite the previous fix attempt, the animated background is still not loading or playing on any page — Home, Product, Pricing, About, and Workspace all still show no background animation. Page scroll is now fixed correctly, so the earlier `overflow: hidden` leak has been resolved, but the video itself remains non-functional everywhere.
+1. New users can register (email/password and Google OAuth).
+2. Existing users can log in.
+3. After login, the user lands on the workspace with a **sidebar listing their own previous sessions** (like Claude/ChatGPT history) — most recent first.
+4. Clicking a previous session reopens it with its full chat history, documents, and insights intact — the user can continue the conversation exactly where they left off.
+5. A user can never see, query, or access another user's sessions, documents, or messages — enforced at the database level, not just in application code.
+6. All of this integrates with the **existing** session/document/chat logic — it should feel like the current local session behavior "just started remembering," not like a rebuilt app.
 
-**Required fixes:**
+### Access model — what's public vs. what requires login
 
-1. Treat the previous fix as unsuccessful and re-diagnose from scratch — do not assume the video element, autoplay attributes, or mount timing are correct just because they were addressed before.
-2. First confirm the most basic thing: is the video asset actually being requested and returned successfully at all? Check the network tab / server logs on every route for the video's request — a 404, a broken path, a wrong `public/` asset location, or a build step not copying the asset over are all more likely than a subtle autoplay-timing bug if the video _never_ plays, on _every_ route, even after the previous fix.
-3. Confirm the background video component itself is actually still present and mounted in the DOM on every route — inspect the live DOM on each of the five routes directly; if it is missing entirely (not just failing to play), the issue is that the component isn't being rendered at all, not a playback problem.
-4. If the element is present and the asset loads but it still won't play: verify `muted`, `autoPlay`, and `playsInline` are all set together on the `<video>` tag, and add an explicit `.play()` call in a post-mount effect that handles (catches) the returned promise, retrying on the next user interaction if the browser rejects programmatic playback.
-5. Check for a console error on every route (codec/format issue, CORS on the asset, a conflicting CSS rule like `display: none` or `visibility: hidden` applied to the video container by a more recent style change, or a z-index/stacking issue that hides it behind an opaque background even if it is technically playing).
-6. Do not change the video's visual styling, size, position, opacity, or the asset itself.
-7. Verify on a genuine first load (cache cleared / incognito) on all five routes individually, and report/confirm which of the above was the actual root cause so it doesn't recur in a future pass.
+This is a mixed-access site, not an all-or-nothing gate:
 
----
+- **Public, no login required:** the landing page, product page, pricing page, about page — anyone can browse the marketing site freely, same as today.
+- **Add a "Log in" (or "Sign in") button/link to the existing top navigation bar**, visible on the public pages, styled consistently with the existing nav (matches the "Launch" button already there — this can replace or sit alongside it).
+- **Requires login:** the workspace itself — document upload, chat, sessions, Session Insights. This is the only part of the app behind auth.
+- If a logged-out user tries to reach the workspace directly (e.g. via the existing "Launch Workspace" button or a direct `/workspace` URL), redirect them to `/login` first. After a successful login or signup, send them straight into the workspace (not back to the landing page) so it feels like one continuous action, not two separate steps.
+- A logged-in user visiting the public pages should still see them normally, but the nav should reflect that they're logged in (e.g. "Launch Workspace" / account menu instead of "Log in").
 
-## 2. Chat interface shows the processing/status line multiple times when a PDF is uploaded
+## Explicit non-goals for this phase (do NOT build these now)
 
-**Observed behavior:** When a PDF is uploaded, a "processing" line/message appears multiple times inside the chat message thread itself (not the dedicated Processing Status bar, which is confirmed working correctly). This should not be happening — the chat thread should only ever contain actual conversation messages (user questions and AI answers), never repeated system/status messages about document processing.
+- No clickable in-document citation jumping
+- No cross-document synthesis/comparison
+- No export-to-PDF/Markdown feature
+- No auto-generated mind maps/flashcards
+- No cross-session semantic search
+- No confidence/grounding indicator on answers
+- No changes to the visual design system, glassmorphism, colors, fonts, or landing/product/pricing/about pages
+- No new document processing logic, no changes to the RAG pipeline itself, no changes to how answers are generated
 
-**Required fixes:**
+These are planned for a later phase. Building them now is out of scope and should be flagged, not silently added.
 
-1. Identify where this status message is being injected into the chat thread's message list/state — it is likely a status update handler (e.g., polling callback, websocket/event handler) that is incorrectly pushing a new chat message into the conversation on every status change or every poll tick, instead of only updating the dedicated Processing Status bar's state.
-2. Remove document-processing status entirely from the chat message thread. All processing/pipeline status must live exclusively in the dedicated Processing Status bar (per the working timeline component) — the chat thread must never contain system-generated "processing" entries at all, not even a single one.
-3. If a poller or event handler is firing repeatedly (e.g., once per poll interval) and each firing is appending a new message rather than updating one, fix the underlying cause: state updates from the polling/status source must update the Processing Status bar's own state in place, and must be completely decoupled from whatever appends to the chat message array.
-4. Verify with a full real upload: uploading a PDF (and other formats) must never add any message to the chat thread — the chat thread should only ever grow when the user sends a message and when the AI responds to it.
+## Hard constraint: do not regress existing functionality
 
----
+Before starting, read through the existing codebase and understand how sessions, documents, and chat currently flow end to end. Every change in this phase must be additive:
 
-## 3. Rename dropdown (session kebab menu) is positioned too far below the trigger
+- Document upload, processing, and the RAG chat pipeline must work identically to today, just now scoped to a `user_id` instead of being global/anonymous.
+- The existing UI/UX for the chat panel, processing timeline, and Session Insights panel must be visually unchanged — only their **data source** changes (from local/in-memory state to Supabase-backed, user-scoped data).
+- Do not remove or rewrite working RAG/ingestion code as part of this change. If a refactor is genuinely required to wire in `user_id`/`session_id` scoping, keep it minimal and localized.
+- After implementation, the existing (pre-auth) core flows — upload a doc, ask a question, get a cited answer — must still work for a logged-in user exactly as they did before, just persisted now.
 
-**Observed behavior:** Clicking the three-dot (kebab) menu next to a session opens the `Rename` / `Delete` dropdown, but the dropdown box appears noticeably below where the three-dot button actually is, rather than anchored directly to it.
+## Environment variables (already created — use these exact names, do not rename or duplicate)
 
-**Required fixes:**
+Supabase project is already set up, Google OAuth is already configured, and the following env files already exist with real values in them. Read from these exact variable names — do not invent different names, and do not create a second/alternate env file:
 
-1. Fix the dropdown's positioning/anchoring so it opens immediately adjacent to the three-dot button that triggered it (directly below or beside it, per whatever the app's existing menu/popover component does elsewhere) — not offset further down the sidebar.
-2. Check whether the dropdown is being positioned with a hardcoded/static offset, or whether it's anchored to the wrong reference element (e.g., the session row's top instead of the kebab button itself, or a stale/incorrectly-measured position from before the row's height was set).
-3. If using a popover/portal-based menu, confirm it recalculates its position correctly relative to the actual trigger element's current on-screen position, including when the session list itself is scrolled.
-4. Verify visually: the dropdown should appear snapped to the kebab button with no visible gap, for every session row in the list, including the first, a middle, and the last row.
+- **Backend** — `.env` inside the backend/FastAPI project folder:
+  - `SUPABASE_URL`
+  - `SUPABASE_SERVICE_ROLE_KEY` (server-side only — never read this into any frontend code or expose it via an API response)
 
----
+- **Frontend** — `.env.local` inside the frontend/Next.js project folder (same folder as its `package.json`):
+  - `NEXT_PUBLIC_SUPABASE_URL`
+  - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 
-## 4. Chat does not auto-scroll to the newest answer
+Google sign-in is already enabled and configured in the Supabase dashboard (Authentication → Providers → Google), with redirect URLs already set for local dev (`http://localhost:3000`). No further Supabase dashboard configuration should be needed for this phase — if the implementation seems to require a dashboard change beyond what's listed here, flag it instead of assuming.
 
-**Observed behavior:** When a new query is submitted and the AI's answer comes back, the conversation view does not automatically scroll down to show it — the user has to manually scroll down to see the new answer.
+## What to build
 
-**Required fixes:**
+### 1. Database schema (Supabase Postgres)
 
-1. Implement auto-scroll-to-bottom behavior in the message thread: whenever a new message is appended (both the user's own sent message and the AI's response arriving), the thread must automatically scroll so the newest message is fully visible, without requiring any manual scrolling.
-2. Preserve the previously-specified behavior of not yanking the user back down if they've deliberately scrolled up to read earlier history — auto-scroll should apply when the user is already at (or near) the bottom of the thread; if they've scrolled up to read older messages, a new message arriving should not forcibly snap them back down (a small "new message ↓" indicator/button to jump down is an acceptable pattern here if the app doesn't already have one, but is not required — the core requirement is: at-bottom by default, always auto-scroll to new content).
-3. Verify with a full real conversation: sending several queries in a row, each answer must land fully visible without manual scrolling, for both short and long answers.
+Create these tables (adapt field names to match what the existing code already uses wherever possible, to minimize churn):
 
----
+- `sessions`
+  - `id` (uuid, pk)
+  - `user_id` (uuid, references `auth.users`, not null)
+  - `name` (text)
+  - `created_at` (timestamptz, default now())
+  - `updated_at` (timestamptz)
 
-## 5. "See details" / expand-to-read-more is appearing on every answer, including short ones
+- `documents`
+  - `id` (uuid, pk)
+  - `session_id` (uuid, references `sessions.id`, not null)
+  - `filename` (text)
+  - `file_type` (text)
+  - `status` (text — processing stage, matches existing timeline states)
+  - `metadata` (jsonb — page count, size, OCR info, etc.)
+  - `created_at` (timestamptz, default now())
 
-**Observed behavior:** Every single AI answer is being collapsed behind a "See details ↓" / "see more" expand action, requiring an extra click to read the full response — even for answers that are not actually long. This should only happen for genuinely long responses, not as a default behavior on every answer.
+- `messages`
+  - `id` (uuid, pk)
+  - `session_id` (uuid, references `sessions.id`, not null)
+  - `role` (text — 'user' | 'assistant')
+  - `content` (text)
+  - `sources` (jsonb — citation metadata as currently produced by the chat pipeline)
+  - `created_at` (timestamptz, default now())
 
-**Required fixes:**
+Do not create a separate `users` table — Supabase's built-in `auth.users` is the source of truth for identity. Reference it via `user_id` foreign keys as above.
 
-1. Fix the condition that decides whether a message is collapsed — it is currently either always collapsing regardless of length, or using a threshold that's far too low (or broken/always-true). It must only collapse an answer when the answer's actual rendered length exceeds a reasonable threshold (e.g., a defined character/line count that corresponds to a response that would otherwise take up a large, thread-dominating amount of vertical space) — short and medium-length answers must render in full immediately with no collapse/expand interaction at all.
-2. Confirm the collapse feature still exists and works correctly for answers that genuinely are long (this pattern was correctly present in the original reference design for long responses) — this is a threshold/condition fix, not a removal of the feature entirely.
-3. Verify across a range of real answers: a one- or two-sentence answer must render fully with no "See details" prompt; a genuinely long, multi-paragraph or multi-bullet answer should still correctly show the collapsed-with-expand pattern.
+### 2. Row Level Security (RLS)
 
----
+Enable RLS on `sessions`, `documents`, and `messages`.
 
-## 6. Excessive visible scrollbars inside sidebar sections make the layout look unpolished
+- `sessions`: policy so a row is selectable/insertable/updatable/deletable only when `user_id = auth.uid()`.
+- `documents` and `messages`: policy checks ownership via a join back to `sessions.user_id = auth.uid()` (since these tables don't have `user_id` directly).
 
-**Observed behavior:** Each independently-scrolling section (the Sessions list, the Documents list, and the Session Insights panel on the right) shows its own visible vertical scrollbar at all times, which looks cluttered and unpolished rather than clean, even when scrolling isn't actively happening.
+This is the actual security boundary — application code should never be the only thing preventing cross-user access. Verify this with a real test (see Acceptance Criteria).
 
-**Required fixes:**
+### 3. Frontend (Next.js)
 
-1. This is a purely cosmetic scrollbar-styling fix — the underlying independent-scroll-per-section behavior (each pane scrolling on its own, page-level scroll staying locked in the Workspace route) must be preserved exactly as-is; only the _visual appearance_ of the scrollbars themselves changes.
-2. Style scrollbars to be minimal/unobtrusive and consistent with the existing dark theme — thin, low-contrast, and ideally only appearing on hover/active-scroll rather than being permanently visible as a thick default-OS scrollbar. Use standard cross-browser scrollbar styling (e.g., `scrollbar-width: thin` plus a themed `scrollbar-color` for Firefox, and `::-webkit-scrollbar` rules for Chromium browsers) so this holds consistently across browsers, not just one.
-3. Apply this scrollbar styling to all three independently-scrolling panes (Sessions list, Documents list, Session Insights panel) plus the chat message thread, so the whole workspace has a single consistent, unobtrusive scrollbar treatment rather than each section looking different.
-4. Do not change spacing, padding, or the width of any container to achieve this — this is a scrollbar-appearance-only fix, not a layout change.
-5. Verify visually in both Chrome/Edge (Webkit-based) and Firefox that scrollbars are present and functional but no longer look like a raw, unstyled default browser scrollbar clashing with the dark theme.
+- Add `/login` and `/signup` pages, styled consistently with the existing glassmorphic dark theme (reuse existing design tokens/components — do not introduce a new visual style).
+  - Signup: email + password, plus "Continue with Google."
+  - Login: email + password, plus "Continue with Google." Include a "forgot password" link (Supabase supports this out of the box).
+- Use `@supabase/supabase-js` (and `@supabase/auth-helpers-nextjs` or the current recommended Next.js integration) for auth state and session handling on the client.
+- Protect the `/workspace` routes only: unauthenticated users are redirected to `/login`. Public marketing pages (landing/product/pricing/about) must remain reachable without login, per "Access model" above.
+- Add a "Log in" entry to the existing nav bar for logged-out visitors; swap it for the account menu / "Launch Workspace" when a session is active. Reuse the existing nav component/styling — don't introduce a new nav design.
+- After login or signup succeeds, redirect straight into `/workspace` (not back to the landing page).
+- In the workspace sidebar, replace the current local "Sessions" list with a query for the logged-in user's sessions (`SELECT * FROM sessions WHERE user_id = auth.uid() ORDER BY updated_at DESC`), rendered in the existing sidebar UI/styling — only the data source changes.
+- Selecting a session loads its `documents` and `messages` from Supabase and renders them in the existing chat/document/insights panels — again, same UI, now backed by persisted data.
+- "New Session" creates a row in `sessions` with the current user's `user_id`, then behaves as it does today.
+- On first-ever login (no sessions yet), auto-create one default session so the workspace isn't empty, consistent with current first-load behavior.
+- Add a simple account menu (user email + "Log out") wherever fits naturally into the existing header/workspace chrome without disrupting layout.
 
----
+### 4. Backend (FastAPI)
 
-## Acceptance criteria for this cycle
+- Add a dependency/middleware that reads the Supabase-issued JWT from the `Authorization: Bearer <token>` header on every protected request.
+- Verify the token against Supabase's JWKS (or use the Supabase Python client's built-in verification) and extract `user_id`.
+- Reject requests with missing/invalid tokens with a 401.
+- Update existing endpoints (session create/list/delete, document upload/list/delete, chat/query) to scope all reads/writes by the authenticated `user_id`, using the same RLS-backed tables. Existing endpoint behavior/response shapes should stay the same wherever possible — only the scoping changes.
+- Store Supabase URL, anon key, and service role key as environment variables (never hardcode). Service role key is backend-only, never exposed to the frontend.
 
-- [ ] Background video plays correctly, on first load, on every route (Home, Product, Pricing, About, Workspace) — confirmed via network tab (asset loads) and visual inspection (actually rendering and animating), not just "attribute is present."
-- [ ] Uploading a PDF (or any document) never adds any message to the chat conversation thread — processing status is visible only in the dedicated Processing Status bar.
-- [ ] The session kebab menu's Rename/Delete dropdown opens snapped directly to its trigger button, for every session row.
-- [ ] The chat thread automatically scrolls to show a new answer as soon as it arrives, for every query, without manual scrolling — while not forcibly yanking the view if the user has intentionally scrolled up.
-- [ ] Short and medium AI answers render in full immediately with no "See details" prompt; only genuinely long answers use the collapse/expand pattern.
-- [ ] Sessions list, Documents list, Session Insights panel, and the chat message thread all use a thin, unobtrusive, theme-consistent scrollbar style instead of a default thick browser scrollbar, in both Webkit and Firefox — with the existing independent per-section scroll behavior and fixed-viewport Workspace layout otherwise completely unchanged.
-- [ ] No regressions: page scroll on all routes, the dedicated Processing Status timeline's real-time stage progression, and Session Insights population/scoping all remain exactly as they currently work correctly.
-- [ ] No changes to color values, typography, icon set, border-radius, or any component's visual design beyond the specific scrollbar-appearance fix in item 6.
+### 5. Migration/compatibility note
+
+If there is existing local/in-memory or file-based session data from the pre-auth version, it does not need to be migrated into Supabase — it's fine to start fresh once auth is live. Flag this assumption rather than silently deciding it.
+
+## Acceptance criteria
+
+- [ ] A new user can sign up with email/password and with Google, and lands on an empty (or default) workspace.
+- [ ] An existing user can log in and see exactly their own previous sessions in the sidebar, most recent first.
+- [ ] Opening a previous session restores its full chat history, its documents, and its Session Insights panel, matching what was there before.
+- [ ] Creating a new session, uploading a document, and asking a question all work identically to the pre-auth version, just now persisted and scoped to the logged-in user.
+- [ ] Two separate test accounts cannot see each other's sessions/documents/messages — including when directly querying the API with a valid token for a different session ID (not just "hidden in the UI").
+- [ ] Logging out and back in restores the same session list and history.
+- [ ] All existing pages (landing, product, pricing, about) and the existing visual design are unchanged, and remain viewable by a logged-out visitor without any redirect.
+- [ ] A logged-out user hitting `/workspace` directly (or clicking "Launch Workspace") is redirected to `/login`, and after logging in/signing up lands directly in the workspace, not back on the landing page.
+- [ ] The nav bar shows "Log in" when logged out, and an account menu / "Launch Workspace" when logged in.
+- [ ] The RAG pipeline (retrieval, generation, citations) behaves identically to before this phase — no regressions.
+
+## Explicitly out of scope for this phase
+
+Anything listed under "Explicit non-goals" above. If it seems tempting to add while in the code, don't — flag it as a suggestion for the next phase instead.

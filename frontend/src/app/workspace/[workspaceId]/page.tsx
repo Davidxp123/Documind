@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import ReactMarkdown from 'react-markdown';
 import {
   Sparkles,
@@ -25,11 +25,15 @@ import {
   Plus,
   AlertTriangle,
   CheckCircle2,
+  LogOut,
+  Loader2,
 } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
+import { supabase } from '@/lib/supabase/client';
 
 type DocumentStatus = {
   id: string;
-  workspace_id: string;
+  workspace_id?: string;
   session_id?: string | null;
   filename: string;
   file_type: string;
@@ -53,8 +57,12 @@ type SessionState = {
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? '/api';
 
 export default function WorkspacePage() {
+  const router = useRouter();
   const params = useParams();
-  const workspaceId = String(params?.workspaceId ?? 'demo');
+  const workspaceId = String(params?.workspaceId ?? 'default');
+
+  const { user, session, loading: authLoading, signOut } = useAuth();
+
   const [input, setInput] = useState('');
   const [documents, setDocuments] = useState<DocumentStatus[]>([]);
   const [uploading, setUploading] = useState(false);
@@ -64,14 +72,12 @@ export default function WorkspacePage() {
   const [activeTab, setActiveTab] = useState<'sessions' | 'chat' | 'insights'>('chat');
   const [activeMenuSessionId, setActiveMenuSessionId] = useState<string | null>(null);
   const [activeMenuDocId, setActiveMenuDocId] = useState<string | null>(null);
-  // Fix 3: kebab dropdown position (fixed coords anchored to button via getBoundingClientRect)
   const [sessionMenuPos, setSessionMenuPos] = useState<{ top: number; right: number } | null>(null);
   const [docMenuPos, setDocMenuPos] = useState<{ top: number; right: number } | null>(null);
   const [expandedMessages, setExpandedMessages] = useState<Record<number, boolean>>({});
   const [processingStage, setProcessingStage] = useState<number>(5); // 1: Upload Complete, 2: Extraction, 3: Embedding, 4: Analysis, 5: Ready
   const [isProcessing, setIsProcessing] = useState(false);
   const [showAllDocs, setShowAllDocs] = useState(false);
-  // Fix 4: auto-scroll — track whether user has scrolled up intentionally
   const [userScrolledUp, setUserScrolledUp] = useState(false);
   const [hasNewMessage, setHasNewMessage] = useState(false);
 
@@ -79,6 +85,19 @@ export default function WorkspacePage() {
   const messagesContainerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Authentication guard
+  useEffect(() => {
+    if (!authLoading && !user) {
+      router.push('/login?redirectTo=/workspace');
+    }
+  }, [user, authLoading, router]);
+
+  // Helper to get fresh access token
+  const getAccessToken = useCallback(async (): Promise<string | null> => {
+    if (session?.access_token) return session.access_token;
+    const { data } = await supabase.auth.getSession();
+    return data.session?.access_token ?? null;
+  }, [session]);
 
   const currentSession: SessionState = sessions.find((session) => session.id === currentSessionId) ?? {
     id: currentSessionId || 'default',
@@ -88,7 +107,7 @@ export default function WorkspacePage() {
   };
   const currentMessages = currentSession.messages;
 
-  // Fix 4: Auto-scroll to bottom whenever messages change, but only if user is near bottom
+  // Auto-scroll to bottom
   useEffect(() => {
     const container = messagesContainerRef.current;
     if (!container) return;
@@ -115,8 +134,6 @@ export default function WorkspacePage() {
     setUserScrolledUp(false);
     setHasNewMessage(false);
   };
-
-
 
   const updateSessionMessages = (newMessages: { role: 'user' | 'assistant'; text: string }[]) => {
     setSessions((prev) =>
@@ -160,33 +177,38 @@ export default function WorkspacePage() {
     );
   };
 
-  const updateSessionDocsFromWorkspace = (workspaceDocs: DocumentStatus[]) => {
-    setSessions((prev) =>
-      prev.map((session) => ({
-        ...session,
-        docs: workspaceDocs.filter((doc) => doc.session_id === session.id || !doc.session_id),
-      }))
-    );
-  };
+  const fetchSessionDocuments = useCallback(async (sessionId: string) => {
+    const token = await getAccessToken();
+    if (!token) return;
 
-  const fetchWorkspaceDocuments = async () => {
-    if (!workspaceId) return;
     try {
-      const response = await fetch(`${API_BASE}/documents/workspace/${workspaceId}`);
+      const response = await fetch(`${API_BASE}/documents/session/${sessionId}/documents`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (!response.ok) return;
       const docs: DocumentStatus[] = await response.json();
       if (Array.isArray(docs)) {
-        setDocuments(docs);
-        updateSessionDocsFromWorkspace(docs);
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, docs } : s))
+        );
       }
     } catch (err) {
-      console.warn('Workspace documents fetch warning:', err);
+      console.warn('Session documents fetch warning:', err);
     }
-  };
+  }, [getAccessToken]);
 
-  const fetchSessionMessages = async (sessionId: string) => {
+  const fetchSessionMessages = useCallback(async (sessionId: string) => {
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
-      const response = await fetch(`${API_BASE}/documents/session/${sessionId}/messages`);
+      const response = await fetch(`${API_BASE}/documents/session/${sessionId}/messages`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (!response.ok) return;
       const messages = await response.json();
       if (Array.isArray(messages) && messages.length > 0) {
@@ -218,11 +240,54 @@ export default function WorkspacePage() {
     } catch (err) {
       console.warn('Session messages fetch warning:', err);
     }
-  };
+  }, [getAccessToken]);
 
-  const fetchWorkspaceSessions = async () => {
+  const createDefaultSession = useCallback(async () => {
+    const defaultName = 'Sample-1';
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
-      const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`);
+      const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: defaultName }),
+      });
+      if (response.ok) {
+        const sessionData = await response.json();
+        setSessions([
+          {
+            id: sessionData.id,
+            name: sessionData.name,
+            messages: [
+              {
+                role: 'assistant',
+                text: "Hello! I've processed your documents and they are ready for analysis.\nHow can I assist you today?",
+              },
+            ],
+            docs: [],
+          },
+        ]);
+        setCurrentSessionId(sessionData.id);
+      }
+    } catch (err) {
+      console.warn('Default session creation fallback:', err);
+    }
+  }, [getAccessToken, workspaceId]);
+
+  const fetchWorkspaceSessions = useCallback(async () => {
+    const token = await getAccessToken();
+    if (!token) return;
+
+    try {
+      const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (!response.ok) throw new Error(await response.text());
       const data = await response.json();
       if (!Array.isArray(data) || data.length === 0) {
@@ -240,65 +305,20 @@ export default function WorkspacePage() {
       if (firstSessionId) {
         setCurrentSessionId(firstSessionId);
         fetchSessionMessages(firstSessionId);
+        fetchSessionDocuments(firstSessionId);
       }
     } catch (err) {
       console.warn('Workspace sessions fetch error:', err);
       await createDefaultSession();
     }
-  };
+  }, [getAccessToken, workspaceId, createDefaultSession, fetchSessionMessages, fetchSessionDocuments]);
 
-  const createDefaultSession = async () => {
-    const defaultName = 'Sample-1';
-    try {
-      const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: defaultName }),
-      });
-      if (response.ok) {
-        const session = await response.json();
-        setSessions([
-          {
-            id: session.id,
-            name: session.name,
-            messages: [
-              {
-                role: 'assistant',
-                text: "Hello! I've processed your documents and they are ready for analysis.\nHow can I assist you today?",
-              },
-            ],
-            docs: [],
-          },
-        ]);
-        setCurrentSessionId(session.id);
-      }
-    } catch (err) {
-      console.warn('Default session creation fallback:', err);
-      const fallbackId = 'session-default-1';
-      setSessions([
-        {
-          id: fallbackId,
-          name: 'Sample-1',
-          messages: [
-            {
-              role: 'assistant',
-              text: "Hello! I've processed your documents and they are ready for analysis.\nHow can I assist you today?",
-            },
-          ],
-          docs: [],
-        },
-      ]);
-      setCurrentSessionId(fallbackId);
-    }
-  };
-
+  // Initial load when user is authenticated
   useEffect(() => {
-    const initWorkspace = async () => {
-      await fetchWorkspaceSessions();
-      await fetchWorkspaceDocuments();
-    };
-    initWorkspace();
-  }, [workspaceId]);
+    if (user && !authLoading) {
+      fetchWorkspaceSessions();
+    }
+  }, [user, authLoading, fetchWorkspaceSessions]);
 
   // Close dropdowns on outside click or Escape
   useEffect(() => {
@@ -330,33 +350,38 @@ export default function WorkspacePage() {
     setProcessingStage(1); // Upload Complete
 
     let count = 0;
+    const token = await getAccessToken();
 
     const interval = setInterval(async () => {
       count += 1;
 
       try {
-        const response = await fetch(`${API_BASE}/documents/workspace/${workspaceId}`);
-        if (response.ok) {
-          const docs: DocumentStatus[] = await response.json();
-          setDocuments(docs);
-          updateSessionDocsFromWorkspace(docs);
+        if (currentSessionId && token) {
+          const response = await fetch(`${API_BASE}/documents/session/${currentSessionId}/documents`, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+            },
+          });
+          if (response.ok) {
+            const docs: DocumentStatus[] = await response.json();
+            setSessions((prev) =>
+              prev.map((s) => (s.id === currentSessionId ? { ...s, docs } : s))
+            );
 
-          const doc = docs.find((item) => item.id === docId);
-          if (doc) {
-            if (doc.status === 'processing') {
-              // Real progress transitions
-              if (count === 1) setProcessingStage(2); // Extraction
-              else if (count === 2) setProcessingStage(3); // Embedding
-              else setProcessingStage(4); // Analysis
-            } else if (doc.status === 'completed' || doc.status.startsWith('failed') || count >= 25) {
-              clearInterval(interval);
-              setIsProcessing(false);
-              setProcessingStage(5); // Ready
+            const doc = docs.find((item) => item.id === docId);
+            if (doc) {
+              if (doc.status === 'processing') {
+                if (count === 1) setProcessingStage(2); // Extraction
+                else if (count === 2) setProcessingStage(3); // Embedding
+                else setProcessingStage(4); // Analysis
+              } else if (doc.status === 'completed' || doc.status.startsWith('failed') || count >= 25) {
+                clearInterval(interval);
+                setIsProcessing(false);
+                setProcessingStage(5); // Ready
 
-              // Fix 2: Do NOT inject any message into the chat thread.
-              // Processing status is communicated solely via the Processing Status timeline bar.
-              if (doc.status.startsWith('failed')) {
-                setError(`Document processing failed: ${doc.status}`);
+                if (doc.status.startsWith('failed')) {
+                  setError(`Document processing failed: ${doc.status}`);
+                }
               }
             }
           }
@@ -372,7 +397,7 @@ export default function WorkspacePage() {
   };
 
   const handleSend = async () => {
-    if (!input.trim()) return;
+    if (!input.trim() || !currentSessionId) return;
 
     const pendingDocs = currentSession.docs.filter(
       (d) => d.status === 'pending' || d.status === 'processing'
@@ -394,10 +419,19 @@ export default function WorkspacePage() {
     updateSessionMessages(updatedMessages);
     setError(null);
 
+    const token = await getAccessToken();
+    if (!token) {
+      setError('You must be logged in to send messages.');
+      return;
+    }
+
     try {
       const response = await fetch(`${API_BASE}/documents/query`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({
           workspace_id: workspaceId,
           session_id: currentSessionId,
@@ -423,23 +457,32 @@ export default function WorkspacePage() {
   };
 
   const onDrop = async (acceptedFiles: File[]) => {
-    if (!acceptedFiles.length) return;
+    if (!acceptedFiles.length || !currentSessionId) return;
     setError(null);
     setUploading(true);
     setIsProcessing(true);
     setProcessingStage(1);
 
+    const token = await getAccessToken();
+    if (!token) {
+      setError('You must be logged in to upload documents.');
+      setUploading(false);
+      setIsProcessing(false);
+      return;
+    }
+
     try {
       for (const file of acceptedFiles) {
         const formData = new FormData();
         formData.append('workspace_id', workspaceId);
-        if (currentSessionId) {
-          formData.append('session_id', currentSessionId);
-        }
+        formData.append('session_id', currentSessionId);
         formData.append('file', file);
 
         const response = await fetch(`${API_BASE}/documents/upload`, {
           method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
           body: formData,
         });
 
@@ -451,10 +494,9 @@ export default function WorkspacePage() {
         const data = await response.json();
         if (data?.doc) {
           appendSessionDoc(data.doc as DocumentStatus);
-          setDocuments((prev) => [data.doc, ...prev.filter((d) => d.id !== data.doc.id)]);
           pollDocumentStatus(data.doc.id);
         } else {
-          await fetchWorkspaceDocuments();
+          await fetchSessionDocuments(currentSessionId);
         }
       }
     } catch (err: any) {
@@ -473,10 +515,17 @@ export default function WorkspacePage() {
   });
 
   const handleDeleteDocument = async (docId: string) => {
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
-      const resp = await fetch(`${API_BASE}/documents/${docId}`, { method: 'DELETE' });
+      const resp = await fetch(`${API_BASE}/documents/${docId}`, {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (!resp.ok) throw new Error(await resp.text());
-      setDocuments((prev) => prev.filter((d) => d.id !== docId));
       removeSessionDoc(docId);
       setActiveMenuDocId(null);
     } catch (e: any) {
@@ -489,15 +538,20 @@ export default function WorkspacePage() {
     const newName = prompt('Rename document:', currentFilename);
     if (!newName?.trim() || newName.trim() === currentFilename) return;
 
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
       const response = await fetch(`${API_BASE}/documents/${docId}/rename`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ filename: newName.trim() }),
       });
       if (!response.ok) throw new Error(await response.text());
       const updated = await response.json();
-      setDocuments((prev) => prev.map((d) => (d.id === docId ? { ...d, filename: updated.filename } : d)));
       setSessions((prev) =>
         prev.map((s) => ({
           ...s,
@@ -511,8 +565,16 @@ export default function WorkspacePage() {
   };
 
   const handleRetryDocument = async (docId: string) => {
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
-      const resp = await fetch(`${API_BASE}/documents/${docId}/retry`, { method: 'POST' });
+      const resp = await fetch(`${API_BASE}/documents/${docId}/retry`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
       if (resp.ok) {
         pollDocumentStatus(docId);
         setActiveMenuDocId(null);
@@ -524,17 +586,23 @@ export default function WorkspacePage() {
 
   const createNewSession = async () => {
     const name = `Sample-${sessions.length + 1}`;
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
       const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ name }),
       });
       if (response.ok) {
-        const session = await response.json();
+        const sessionData = await response.json();
         const newSessionState: SessionState = {
-          id: session.id,
-          name: session.name,
+          id: sessionData.id,
+          name: sessionData.name,
           docs: [],
           messages: [
             {
@@ -543,26 +611,12 @@ export default function WorkspacePage() {
             },
           ],
         };
-        setSessions((prev) => [...prev, newSessionState]);
-        setCurrentSessionId(session.id);
+        // Insert at the front (most recent first)
+        setSessions((prev) => [newSessionState, ...prev]);
+        setCurrentSessionId(sessionData.id);
       }
     } catch (err) {
-      const localId = `session-local-${Date.now()}`;
-      setSessions((prev) => [
-        ...prev,
-        {
-          id: localId,
-          name,
-          docs: [],
-          messages: [
-            {
-              role: 'assistant',
-              text: "Started a new local session. Ready for queries.",
-            },
-          ],
-        },
-      ]);
-      setCurrentSessionId(localId);
+      console.error('Failed to create new session:', err);
     }
   };
 
@@ -571,10 +625,16 @@ export default function WorkspacePage() {
     const newName = prompt('Rename session:', currentName);
     if (!newName?.trim() || newName.trim() === currentName) return;
 
+    const token = await getAccessToken();
+    if (!token) return;
+
     try {
       const response = await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions/${sessionId}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
         body: JSON.stringify({ name: newName.trim() }),
       });
       if (!response.ok) throw new Error(await response.text());
@@ -586,11 +646,7 @@ export default function WorkspacePage() {
       );
       setActiveMenuSessionId(null);
     } catch (err) {
-      setSessions((prev) =>
-        prev.map((session) =>
-          session.id === sessionId ? { ...session, name: newName.trim() } : session
-        )
-      );
+      console.error('Failed to rename session:', err);
       setActiveMenuSessionId(null);
     }
   };
@@ -598,12 +654,18 @@ export default function WorkspacePage() {
   const deleteSession = async (sessionId: string) => {
     if (!confirm('Are you sure you want to delete this session?')) return;
 
-    try {
-      await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions/${sessionId}`, {
-        method: 'DELETE',
-      });
-    } catch (err) {
-      console.warn('Delete session call failed or was local:', err);
+    const token = await getAccessToken();
+    if (token) {
+      try {
+        await fetch(`${API_BASE}/workspaces/${workspaceId}/sessions/${sessionId}`, {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        });
+      } catch (err) {
+        console.warn('Delete session call failed:', err);
+      }
     }
 
     const remaining = sessions.filter((session) => session.id !== sessionId);
@@ -614,7 +676,10 @@ export default function WorkspacePage() {
       if (currentSessionId === sessionId) {
         const nextId = remaining[0]?.id ?? '';
         setCurrentSessionId(nextId);
-        if (nextId) fetchSessionMessages(nextId);
+        if (nextId) {
+          fetchSessionMessages(nextId);
+          fetchSessionDocuments(nextId);
+        }
       }
     }
     setActiveMenuSessionId(null);
@@ -622,8 +687,6 @@ export default function WorkspacePage() {
 
   const getTopInsights = () => {
     const insights: string[] = [];
-
-    // From attached document summaries in current session
     for (const doc of currentSession.docs) {
       if (doc.summary) {
         const sentences = doc.summary
@@ -638,7 +701,6 @@ export default function WorkspacePage() {
         }
       }
     }
-
     return insights;
   };
 
@@ -704,9 +766,24 @@ export default function WorkspacePage() {
 
   const displayedDocs = showAllDocs ? currentSession.docs : currentSession.docs.slice(0, 6);
 
+  if (authLoading) {
+    return (
+      <div className="min-h-[calc(100vh-73px)] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-8 h-8 text-purple-400 animate-spin" />
+          <p className="text-xs text-white/60 tracking-wider uppercase font-medium">Loading Workspace...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return null; // Handled by useEffect redirect
+  }
+
   return (
     <div className="h-[calc(100vh-73px)] w-full p-2.5 sm:p-4 lg:p-5 flex flex-col overflow-hidden bg-transparent select-none">
-      {/* 3-Column Glass Card Container matching Updated-UI.png */}
+      {/* 3-Column Glass Card Container */}
       <div className="w-full h-full max-w-[1780px] mx-auto rounded-[28px] border border-white/15 bg-black/65 backdrop-blur-2xl grid grid-cols-1 lg:grid-cols-[280px_1fr_320px] xl:grid-cols-[300px_1fr_340px] overflow-hidden shadow-2xl min-h-0">
         
         {/* ========================================================================= */}
@@ -719,11 +796,16 @@ export default function WorkspacePage() {
           `}
         >
           {/* Header */}
-          <div className="flex items-center gap-2.5 mb-5 flex-shrink-0">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-purple-600/80 to-purple-400/90 flex items-center justify-center shadow-lg shadow-purple-500/20 border border-purple-300/30">
-              <Sparkles className="w-4 h-4 text-white" />
+          <div className="flex items-center justify-between mb-5 flex-shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-purple-600/80 to-purple-400/90 flex items-center justify-center shadow-lg shadow-purple-500/20 border border-purple-300/30">
+                <Sparkles className="w-4 h-4 text-white" />
+              </div>
+              <h1 className="text-2xl font-heading italic text-white tracking-wide">Workspace</h1>
             </div>
-            <h1 className="text-2xl font-heading italic text-white tracking-wide">Workspace</h1>
+            <span className="text-[10px] text-white/40 max-w-[100px] truncate" title={user.email || ''}>
+              {user.email?.split('@')[0]}
+            </span>
           </div>
 
           {/* SESSIONS BLOCK */}
@@ -756,12 +838,13 @@ export default function WorkspacePage() {
                     onClick={() => {
                       setCurrentSessionId(session.id);
                       fetchSessionMessages(session.id);
+                      fetchSessionDocuments(session.id);
                       if (window.innerWidth < 1024) setActiveTab('chat');
                     }}
                   >
                     <span className="truncate pr-2">{session.name}</span>
 
-                    {/* Kebab menu trigger — Fix 3: fixed position via getBoundingClientRect */}
+                    {/* Kebab menu trigger */}
                     <div className="flex-shrink-0">
                       <button
                         onClick={(e) => {
@@ -791,7 +874,7 @@ export default function WorkspacePage() {
               })}
             </div>
 
-            {/* Dedicated Delete Session Button matching Updated-UI.png */}
+            {/* Dedicated Delete Session Button */}
             <button
               onClick={() => currentSessionId && deleteSession(currentSessionId)}
               className="mt-3 w-full rounded-xl border border-red-500/20 bg-red-500/10 py-2 text-xs text-red-300 hover:bg-red-500/20 hover:text-red-200 transition-all flex items-center justify-center gap-2 font-medium"
@@ -844,7 +927,6 @@ export default function WorkspacePage() {
                         <span className="text-[10px] text-white/50 uppercase">
                           {doc.file_type.toUpperCase()} · {formatFileSize(doc.file_size)}
                         </span>
-                        {/* Contained inline status badge */}
                         {doc.status !== 'completed' && (
                           <span
                             className={`text-[9px] px-1.5 py-0.2 rounded-md max-w-[85px] truncate font-medium ${
@@ -861,7 +943,7 @@ export default function WorkspacePage() {
                     </div>
                   </div>
 
-                  {/* Kebab menu — Fix 3: fixed position via getBoundingClientRect */}
+                  {/* Kebab menu */}
                   <div className="flex-shrink-0 ml-1">
                     <button
                       onClick={(e) => {
@@ -932,83 +1014,82 @@ export default function WorkspacePage() {
                 </h2>
               </div>
             </div>
-            <div className="text-xs text-purple-400 font-medium">
-              Active session: <span className="text-purple-300">{currentSession.name}</span>
+            <div className="flex items-center gap-3">
+              <div className="text-xs text-purple-400 font-medium">
+                Active session: <span className="text-purple-300">{currentSession.name}</span>
+              </div>
             </div>
           </header>
 
-
-          {/* Messages Scroll Area — Fix 4: container ref + smart auto-scroll */}
+          {/* Messages Scroll Area */}
           <div className="relative flex-1 flex flex-col min-h-0">
             <div
               ref={messagesContainerRef}
               onScroll={handleMessagesScroll}
               className="flex-1 overflow-y-auto p-4 md:p-6 space-y-5 min-h-0 select-text workspace-scroll"
             >
-            {currentMessages.map((message, index) => {
-              const isAssistant = message.role === 'assistant';
-              const isExpanded = expandedMessages[index] ?? false;
-              // Fix 5: only collapse genuinely long answers (>1800 chars)
-              const isLong = isAssistant && message.text.length > 1800;
+              {currentMessages.map((message, index) => {
+                const isAssistant = message.role === 'assistant';
+                const isExpanded = expandedMessages[index] ?? false;
+                const isLong = isAssistant && message.text.length > 1800;
 
-              return (
-                <div
-                  key={index}
-                  className={`flex items-start gap-3 ${
-                    isAssistant ? 'justify-start' : 'justify-end'
-                  }`}
-                >
-                  {isAssistant && (
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-purple-600 to-purple-400 border border-purple-300/30 flex items-center justify-center shadow-md shadow-purple-500/20 mt-1">
-                      <Sparkles className="w-4 h-4 text-white" />
-                    </div>
-                  )}
-
+                return (
                   <div
-                    className={`rounded-3xl p-4 md:p-5 text-sm leading-relaxed ${
-                      isAssistant
-                        ? 'bg-white/[0.04] border border-white/10 text-white/90 max-w-[90%] md:max-w-[82%]'
-                        : 'bg-white/10 border border-white/15 text-white max-w-[85%] md:max-w-[75%]'
+                    key={index}
+                    className={`flex items-start gap-3 ${
+                      isAssistant ? 'justify-start' : 'justify-end'
                     }`}
                   >
-                    {isAssistant ? (
-                      <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1.5 prose-li:my-0.5">
-                        <ReactMarkdown>
-                          {isLong && !isExpanded
-                            ? `${message.text.slice(0, 900)}...`
-                            : message.text}
-                        </ReactMarkdown>
-                        {isLong && (
-                          <button
-                            onClick={() =>
-                              setExpandedMessages((prev) => ({
-                                ...prev,
-                                [index]: !prev[index],
-                              }))
-                            }
-                            className="mt-2 text-xs text-purple-400 hover:text-purple-300 font-medium flex items-center gap-1 transition-colors"
-                          >
-                            <span>{isExpanded ? 'See less ↑' : 'See details ↓'}</span>
-                          </button>
-                        )}
+                    {isAssistant && (
+                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-gradient-to-tr from-purple-600 to-purple-400 border border-purple-300/30 flex items-center justify-center shadow-md shadow-purple-500/20 mt-1">
+                        <Sparkles className="w-4 h-4 text-white" />
                       </div>
-                    ) : (
-                      <p className="whitespace-pre-wrap">{message.text}</p>
+                    )}
+
+                    <div
+                      className={`rounded-3xl p-4 md:p-5 text-sm leading-relaxed ${
+                        isAssistant
+                          ? 'bg-white/[0.04] border border-white/10 text-white/90 max-w-[90%] md:max-w-[82%]'
+                          : 'bg-white/10 border border-white/15 text-white max-w-[85%] md:max-w-[75%]'
+                      }`}
+                    >
+                      {isAssistant ? (
+                        <div className="prose prose-invert prose-sm max-w-none prose-p:my-1 prose-ul:my-1.5 prose-li:my-0.5">
+                          <ReactMarkdown>
+                            {isLong && !isExpanded
+                              ? `${message.text.slice(0, 900)}...`
+                              : message.text}
+                          </ReactMarkdown>
+                          {isLong && (
+                            <button
+                              onClick={() =>
+                                setExpandedMessages((prev) => ({
+                                  ...prev,
+                                  [index]: !prev[index],
+                                }))
+                              }
+                              className="mt-2 text-xs text-purple-400 hover:text-purple-300 font-medium flex items-center gap-1 transition-colors"
+                            >
+                              <span>{isExpanded ? 'See less ↑' : 'See details ↓'}</span>
+                            </button>
+                          )}
+                        </div>
+                      ) : (
+                        <p className="whitespace-pre-wrap">{message.text}</p>
+                      )}
+                    </div>
+
+                    {!isAssistant && (
+                      <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center shadow-md mt-1">
+                        <User className="w-4 h-4 text-white/80" />
+                      </div>
                     )}
                   </div>
+                );
+              })}
+              <div ref={messagesEndRef} />
+            </div>
 
-                  {!isAssistant && (
-                    <div className="flex-shrink-0 w-8 h-8 rounded-full bg-white/10 border border-white/20 flex items-center justify-center shadow-md mt-1">
-                      <User className="w-4 h-4 text-white/80" />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-            </div> {/* end scroll container */}
-
-            {/* Fix 4: "new message" jump-to-bottom button when user has scrolled up */}
             {userScrolledUp && hasNewMessage && (
               <button
                 onClick={scrollToBottom}
@@ -1017,7 +1098,7 @@ export default function WorkspacePage() {
                 <span>New message ↓</span>
               </button>
             )}
-          </div> {/* end relative wrapper */}
+          </div>
 
           {/* Bottom Container: Processing Status Timeline + Sticky Chat Input */}
           <div className="p-4 md:p-5 border-t border-white/10 bg-black/40 backdrop-blur-md flex-shrink-0 space-y-3">
@@ -1137,7 +1218,7 @@ export default function WorkspacePage() {
               </div>
             </div>
 
-            {/* Error banner if any */}
+            {/* Error banner */}
             {error && (
               <div className="rounded-xl bg-red-500/10 border border-red-500/20 px-3 py-2 text-xs text-red-200 flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1153,24 +1234,26 @@ export default function WorkspacePage() {
               </div>
             )}
 
-            {/* Chat Input Bar - Sticky, Attachment on Left, Send on Right */}
-            <div className="relative flex items-center rounded-full border border-white/15 bg-white/[0.05] px-4 py-2.5 focus-within:border-purple-400/50 shadow-lg transition-all">
-              {/* Hidden file input for attachment button */}
+            {/* Input Bar */}
+            <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/[0.04] p-1.5 focus-within:border-purple-400/50 focus-within:bg-white/[0.06] transition-all">
               <input
-                type="file"
                 ref={fileInputRef}
-                className="hidden"
+                type="file"
                 multiple
+                className="hidden"
                 onChange={(e) => {
-                  if (e.target.files && e.target.files.length > 0) {
+                  if (e.target.files?.length) {
                     onDrop(Array.from(e.target.files));
+                    e.target.value = '';
                   }
                 }}
               />
               <button
+                type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="p-1.5 rounded-full text-white/50 hover:text-white hover:bg-white/10 transition-colors flex-shrink-0"
-                title="Attach document to active session"
+                disabled={uploading}
+                className="p-2.5 rounded-xl text-white/60 hover:text-white hover:bg-white/10 transition-all disabled:opacity-50"
+                title="Attach files to session"
               >
                 <Paperclip className="w-4 h-4" />
               </button>
@@ -1179,20 +1262,24 @@ export default function WorkspacePage() {
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                placeholder="Type your message..."
-                className="flex-1 bg-transparent px-3 py-1 text-sm text-white placeholder-white/40 focus:outline-none"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                  }
+                }}
+                placeholder="Ask anything grounded in your session's documents..."
+                className="flex-1 bg-transparent px-2 py-2 text-sm text-white placeholder-white/40 focus:outline-none"
               />
 
               <button
+                type="button"
                 onClick={handleSend}
-                disabled={!input.trim()}
-                className={`p-1.5 rounded-full text-white/70 hover:text-white transition-all flex-shrink-0 ${
-                  input.trim() ? 'text-purple-400 hover:text-purple-300' : 'opacity-40 cursor-not-allowed'
-                }`}
-                title="Send query"
+                disabled={!input.trim() || uploading}
+                className="liquid-glass-strong rounded-xl px-4 py-2.5 text-white disabled:opacity-40 hover:bg-white/20 transition-all flex items-center gap-1.5 text-xs font-medium"
               >
-                <Send className="w-4 h-4" />
+                <span>Send</span>
+                <Send className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
@@ -1204,146 +1291,165 @@ export default function WorkspacePage() {
         <aside
           className={`
             ${activeTab === 'insights' ? 'flex' : 'hidden'}
-            lg:flex flex-col h-full overflow-hidden p-4 xl:p-5 bg-white/[0.02] space-y-4 min-h-0
+            lg:flex flex-col h-full overflow-hidden p-4 xl:p-5 bg-white/[0.02] min-h-0
           `}
         >
-          {/* Header */}
-          <div className="flex items-center gap-2.5 flex-shrink-0">
+          <div className="flex items-center gap-2.5 mb-5 flex-shrink-0">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-purple-600/80 to-purple-400/90 flex items-center justify-center shadow-lg shadow-purple-500/20 border border-purple-300/30">
               <BarChart2 className="w-4 h-4 text-white" />
             </div>
-            <h2 className="text-2xl font-heading italic text-white tracking-wide">
-              Session Insights
-            </h2>
-          </div>
-
-          {/* EXECUTIVE SUMMARY Card */}
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 flex flex-col min-h-0 flex-1 overflow-hidden shadow-inner">
-            <span className="text-[10px] uppercase tracking-[0.25em] text-white/40 font-semibold mb-3">
-              EXECUTIVE SUMMARY
-            </span>
-            <div className="overflow-y-auto pr-1 space-y-2.5 text-xs text-white/80 leading-relaxed">
-              {getTopInsights().length > 0 ? (
-                getTopInsights().map((insight, idx) => (
-                  <div key={idx} className="flex items-start gap-2">
-                    <span className="text-purple-400 mt-0.5 flex-shrink-0">•</span>
-                    <span>{insight}</span>
-                  </div>
-                ))
-              ) : (
-                <div className="flex flex-col items-center justify-center h-32 text-center text-white/40 text-xs px-2">
-                  <p>No insights yet.</p>
-                  <p className="mt-1 text-[11px] text-white/30">Upload a document or start a conversation to generate session insights.</p>
-                </div>
-              )}
+            <div>
+              <p className="text-[10px] uppercase tracking-[0.25em] text-white/40 font-semibold">
+                ANALYTICS
+              </p>
+              <h2 className="text-xl font-heading italic text-white tracking-wide">
+                Session Insights
+              </h2>
             </div>
           </div>
 
-          {/* TOP KEYWORDS Card */}
-          <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5 flex flex-col min-h-0 flex-shrink-0 shadow-inner">
-            <span className="text-[10px] uppercase tracking-[0.25em] text-white/40 font-semibold mb-3">
-              TOP KEYWORDS
-            </span>
-            <div className="flex flex-wrap gap-2 overflow-y-auto max-h-36 pr-1">
-              {getTopKeywords().length > 0 ? (
-                getTopKeywords().map((kw) => (
-                  <span
-                    key={kw}
-                    className="text-xs px-3.5 py-1.5 rounded-full bg-white/[0.05] border border-white/10 text-white/80 hover:bg-white/10 hover:text-white transition-all cursor-default"
-                  >
-                    {kw}
-                  </span>
-                ))
+          <div className="flex-1 overflow-y-auto pr-1 space-y-5 workspace-scroll">
+            {/* Executive Summary */}
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-md">
+              <h3 className="text-xs uppercase tracking-wider text-purple-300 font-medium mb-3 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                <span>Executive Summary</span>
+              </h3>
+
+              {getTopInsights().length > 0 ? (
+                <ul className="space-y-2 text-xs text-white/80 leading-relaxed">
+                  {getTopInsights().map((insight, idx) => (
+                    <li key={idx} className="flex items-start gap-2">
+                      <span className="text-purple-400 font-bold mt-0.5">•</span>
+                      <span>{insight}</span>
+                    </li>
+                  ))}
+                </ul>
               ) : (
-                <p className="text-xs text-white/40 py-2">No keywords extracted yet.</p>
+                <p className="text-xs text-white/40 leading-relaxed">
+                  Upload documents to generate an executive summary grounded in your active session.
+                </p>
+              )}
+            </div>
+
+            {/* Top Keywords */}
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 backdrop-blur-md">
+              <h3 className="text-xs uppercase tracking-wider text-purple-300 font-medium mb-3">
+                Top Keywords
+              </h3>
+              {getTopKeywords().length > 0 ? (
+                <div className="flex flex-wrap gap-1.5">
+                  {getTopKeywords().map((kw, idx) => (
+                    <span
+                      key={idx}
+                      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-[11px] text-white/80"
+                    >
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-white/40">
+                  Key entities and themes will appear here as you upload documents and converse.
+                </p>
               )}
             </div>
           </div>
         </aside>
       </div>
 
-      {/* Mobile Bottom Tab Bar (hidden on desktop) */}
-      <div className="lg:hidden flex border-t border-white/10 bg-black/80 backdrop-blur-2xl mt-2 rounded-2xl flex-shrink-0">
+      {/* Floating Kebab Context Menus */}
+      {activeMenuSessionId && sessionMenuPos && (
+        <div
+          style={{
+            position: 'fixed',
+            top: `${sessionMenuPos.top}px`,
+            right: `${sessionMenuPos.right}px`,
+          }}
+          className="z-50 w-36 rounded-xl border border-white/15 bg-black/90 backdrop-blur-2xl p-1.5 shadow-2xl space-y-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => renameSession(activeMenuSessionId)}
+            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-colors text-left"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-purple-400" />
+            <span>Rename</span>
+          </button>
+          <button
+            onClick={() => deleteSession(activeMenuSessionId)}
+            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/20 hover:text-red-200 transition-colors text-left"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+            <span>Delete</span>
+          </button>
+        </div>
+      )}
+
+      {activeMenuDocId && docMenuPos && (
+        <div
+          style={{
+            position: 'fixed',
+            top: `${docMenuPos.top}px`,
+            right: `${docMenuPos.right}px`,
+          }}
+          className="z-50 w-36 rounded-xl border border-white/15 bg-black/90 backdrop-blur-2xl p-1.5 shadow-2xl space-y-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            onClick={() => {
+              const doc = currentSession.docs.find((d) => d.id === activeMenuDocId);
+              if (doc) handleRenameDocument(doc.id, doc.filename);
+            }}
+            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-colors text-left"
+          >
+            <Edit2 className="w-3.5 h-3.5 text-purple-400" />
+            <span>Rename</span>
+          </button>
+          <button
+            onClick={() => handleRetryDocument(activeMenuDocId)}
+            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-white/80 hover:bg-white/10 hover:text-white transition-colors text-left"
+          >
+            <RotateCcw className="w-3.5 h-3.5 text-blue-400" />
+            <span>Retry</span>
+          </button>
+          <button
+            onClick={() => handleDeleteDocument(activeMenuDocId)}
+            className="w-full flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-red-300 hover:bg-red-500/20 hover:text-red-200 transition-colors text-left"
+          >
+            <Trash2 className="w-3.5 h-3.5 text-red-400" />
+            <span>Delete</span>
+          </button>
+        </div>
+      )}
+
+      {/* Mobile Tab Bar */}
+      <div className="lg:hidden flex items-center justify-around mt-2 p-2 rounded-2xl border border-white/15 bg-black/70 backdrop-blur-xl">
         <button
           onClick={() => setActiveTab('sessions')}
-          className={`flex-1 py-3 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${
-            activeTab === 'sessions' ? 'text-purple-400 font-semibold' : 'text-white/40'
+          className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
+            activeTab === 'sessions' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white'
           }`}
         >
           Sessions
         </button>
         <button
           onClick={() => setActiveTab('chat')}
-          className={`flex-1 py-3 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${
-            activeTab === 'chat' ? 'text-purple-400 font-semibold' : 'text-white/40'
+          className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
+            activeTab === 'chat' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white'
           }`}
         >
           Chat
         </button>
         <button
           onClick={() => setActiveTab('insights')}
-          className={`flex-1 py-3 text-[10px] uppercase tracking-[0.2em] font-medium transition-all ${
-            activeTab === 'insights' ? 'text-purple-400 font-semibold' : 'text-white/40'
+          className={`px-3 py-1.5 rounded-xl text-xs font-medium transition-all ${
+            activeTab === 'insights' ? 'bg-white/15 text-white' : 'text-white/60 hover:text-white'
           }`}
         >
           Insights
         </button>
       </div>
-
-      {/* Fix 3: Portal-rendered fixed-position dropdowns — anchored precisely to trigger button coords */}
-      {activeMenuSessionId && sessionMenuPos && (
-        <div
-          className="fixed z-[999] w-36 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
-          style={{ top: sessionMenuPos.top, right: sessionMenuPos.right }}
-          onClick={(e) => e.stopPropagation()}
-        >
-          <button
-            onClick={() => renameSession(activeMenuSessionId)}
-            className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
-          >
-            <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
-          </button>
-          <button
-            onClick={() => deleteSession(activeMenuSessionId)}
-            className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
-          >
-            <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
-          </button>
-        </div>
-      )}
-
-      {activeMenuDocId && docMenuPos && (() => {
-        const doc = currentSession.docs.find((d) => d.id === activeMenuDocId);
-        if (!doc) return null;
-        return (
-          <div
-            className="fixed z-[999] w-36 rounded-xl border border-white/20 bg-[#141418] shadow-2xl py-1"
-            style={{ top: docMenuPos.top, right: docMenuPos.right }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <button
-              onClick={() => handleRenameDocument(doc.id, doc.filename)}
-              className="w-full px-3 py-2 text-left text-xs text-white/90 hover:bg-white/10 hover:text-white flex items-center gap-2"
-            >
-              <Edit2 className="w-3.5 h-3.5 text-white/70" /> Rename
-            </button>
-            {doc.status.startsWith('failed') && (
-              <button
-                onClick={() => handleRetryDocument(doc.id)}
-                className="w-full px-3 py-2 text-left text-xs text-purple-400 hover:bg-purple-500/10 hover:text-purple-300 flex items-center gap-2"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-purple-400" /> Retry
-              </button>
-            )}
-            <button
-              onClick={() => handleDeleteDocument(doc.id)}
-              className="w-full px-3 py-2 text-left text-xs text-red-400 hover:bg-red-500/10 hover:text-red-300 flex items-center gap-2"
-            >
-              <Trash2 className="w-3.5 h-3.5 text-red-400" /> Delete
-            </button>
-          </div>
-        );
-      })()}
     </div>
   );
 }
