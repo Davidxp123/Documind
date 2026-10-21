@@ -146,3 +146,56 @@ The app will be available at `http://localhost:3000`.
 
 ---
 
+## 🚀 Deployment to Render (Single Service)
+
+DocuMind is configured for single-service deployment on [Render](https://render.com), where FastAPI serves both the API and the pre-built static Next.js frontend from `backend/public/`.
+
+### Deploy Workflow
+
+Whenever you make frontend changes or are preparing a release:
+
+1. **Build and synchronize the frontend:**
+   ```bash
+   python build_frontend.py
+   ```
+   This compiles Next.js with `output: 'export'` and copies the output from `frontend/out/` into `backend/public/`.
+
+2. **Commit and push:**
+   ```bash
+   git add backend/public
+   git commit -m "build: update static frontend"
+   git push origin main
+   ```
+   Render automatically detects changes and triggers a deployment.
+
+### Render Service Settings
+
+In your Render Dashboard, create a **Web Service** connected to your repository with the following settings:
+
+| Setting | Value |
+| --- | --- |
+| **Root Directory** | `backend` |
+| **Environment** | `Python 3` |
+| **Build Command** | `pip install -r requirements.txt` |
+| **Start Command** | `uvicorn app.main:app --host 0.0.0.0 --port $PORT` |
+| **Health Check Path** | `/health` |
+
+### Environment Variables
+
+Configure the following environment variables in the Render Dashboard (**Environment** tab):
+
+| Variable Name | Required | Description |
+| --- | --- | --- |
+| `PYTHON_VERSION` | Recommended | Set to `3.12.8` (recommended for reliable PyMuPDF, sentence-transformers & PyTorch Linux wheels) |
+| `GROQ_API_KEY` | Required | Your Groq API key for LLM generation |
+| `PINECONE_API_KEY` | Required | Your Pinecone API key |
+| `PINECONE_INDEX_NAME` | Optional | Pinecone index name (defaults to `docmind-index`) |
+| `SUPABASE_URL` | Required | Your Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Required | Your Supabase service role secret |
+| `GEMINI_API_KEY` | Optional | Legacy fallback key |
+| `KEEPALIVE_INTERVAL_SECONDS` | Optional | Internal keep-alive interval in seconds (default: `600`, keep under 900) |
+
+> **Note on Keep-Alive & Free Tier:** Render automatically defines `RENDER_EXTERNAL_URL`. The built-in heartbeat pings `{RENDER_EXTERNAL_URL}/health` every 10 minutes to prevent the instance from idling. However, Render's free tier suspends instances after 15 minutes of inactivity, and an already sleeping instance cannot wake itself via self-ping. Setting up a free external monitoring service (such as [UptimeRobot](https://uptimerobot.com) or [cron-job.org](https://cron-job.org)) hitting your `/health` endpoint every 5–10 minutes is strongly recommended as a backup.
+
+---
+

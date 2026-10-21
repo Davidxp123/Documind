@@ -52,8 +52,12 @@ coverage/
 *.tmp
 *.temp
 
-# Local vector database
+# Local storage runtime data
 backend/storage/chroma_db/
+backend/storage/docs/*
+!backend/storage/docs/.gitkeep
+backend/storage/sqlite/*
+!backend/storage/sqlite/.gitkeep
 
 # Local agent/tool data
 .agent/
