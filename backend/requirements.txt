@@ -12,7 +12,7 @@ langgraph
 langchain-groq
 groq
 pinecone
-sentence-transformers>=2.5.1
+fastembed
 pymupdf>=1.23.26
 pdfplumber>=0.10.4
 python-docx>=1.1.0

@@ -58,6 +58,7 @@ backend/storage/docs/*
 !backend/storage/docs/.gitkeep
 backend/storage/sqlite/*
 !backend/storage/sqlite/.gitkeep
+backend/storage/fastembed_cache/
 
 # Local agent/tool data
 .agent/

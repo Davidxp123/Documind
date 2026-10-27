@@ -1,7 +1,7 @@
 import time
 import os
 from pinecone import Pinecone, ServerlessSpec
-from sentence_transformers import SentenceTransformer
+from fastembed import TextEmbedding
 from app.core.config import settings
 
 class PineconeStore:
@@ -15,7 +15,10 @@ class PineconeStore:
 
         self.pc = Pinecone(api_key=settings.PINECONE_API_KEY)
         self.index_name = settings.PINECONE_INDEX_NAME
-        self.model = SentenceTransformer("BAAI/bge-small-en-v1.5")
+        
+        cache_dir = os.path.join(settings.STORAGE_DIR, "fastembed_cache")
+        os.makedirs(cache_dir, exist_ok=True)
+        self.model = TextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache_dir)
         self.dimension = 384
         
         # Create index if it doesn't exist
@@ -34,13 +37,18 @@ class PineconeStore:
         
         self.index = self.pc.Index(self.index_name)
 
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.model or not texts:
+            return []
+        return [vec.tolist() for vec in self.model.embed(texts)]
+
     def add_document_chunks(self, workspace_id: str, doc_id: str, filename: str, chunks: list) -> None:
         if not self.index:
             print("[ERROR] Pinecone index not initialized.")
             return
 
         documents = [c["text"] for c in chunks]
-        embeddings = self.model.encode(documents).tolist()
+        embeddings = self._embed(documents)
         
         vectors = []
         for i, chunk in enumerate(chunks):
@@ -64,7 +72,10 @@ class PineconeStore:
         if not self.index:
             return {"documents": [], "metadatas": [], "distances": []}
 
-        query_embedding = self.model.encode([query_text]).tolist()[0]
+        query_embeddings = self._embed([query_text])
+        if not query_embeddings:
+            return {"documents": [], "metadatas": [], "distances": []}
+        query_embedding = query_embeddings[0]
         
         filter_dict = {"workspace_id": workspace_id}
         if doc_ids:
